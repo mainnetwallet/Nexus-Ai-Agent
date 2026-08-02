@@ -16,6 +16,7 @@ from backend.api.routes_memory import router as memory_router
 from backend.api.routes_plugins import router as plugins_router
 from backend.api.routes_reports import router as reports_router
 from backend.api.routes_settings import router as settings_router
+from backend.api.routes_system import router as system_router
 from backend.api.routes_tasks import router as tasks_router
 from backend.api.routes_wallet import router as wallet_router
 from backend.browser.live_session import LiveSessionManager
@@ -85,7 +86,7 @@ async def lifespan(app: FastAPI):
     if settings.telegram_bot_token:
         from backend.telegram.bot import NexusTelegramBot
 
-        bot = NexusTelegramBot(queue=state.queue)
+        bot = NexusTelegramBot(queue=state.queue, app_state=state)
         _telegram_app = bot.build()
         await _telegram_app.initialize()
         await _telegram_app.start()
@@ -150,10 +151,13 @@ app.include_router(browser_router)
 app.include_router(logs_router)
 app.include_router(settings_router)
 app.include_router(plugins_router)
+app.include_router(system_router)
 
 
 @app.get("/api/health")
 async def health():
+    """Lightweight liveness probe (unauthenticated, for load balancers/orchestrators).
+    For the full component-by-component breakdown, see GET /api/system/health."""
     return {"status": "ok", "app": settings.app_name}
 
 
