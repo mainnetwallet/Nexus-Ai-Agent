@@ -304,10 +304,85 @@ export interface AgentStatus {
   error?: string
 }
 
+// ---------- System (health / diagnostics / resources / config / version) ----------
+
+export type ComponentHealthStatus = "ok" | "degraded" | "down" | "unknown"
+
+export interface ComponentHealth {
+  name: string
+  status: ComponentHealthStatus
+  detail: string
+  latency_ms: number | null
+}
+
+export interface HealthReport {
+  overall: ComponentHealthStatus
+  checked_at: number
+  components: ComponentHealth[]
+}
+
+export interface DiagnosticCheck {
+  name: string
+  passed: boolean
+  detail: string
+}
+
+export interface DiagnosticReport {
+  generated_at: number
+  python_version: string
+  platform: string
+  passed: boolean
+  checks: DiagnosticCheck[]
+}
+
+export interface ResourceSnapshot {
+  taken_at: number
+  cpu_percent: number | null
+  process_rss_mb: number | null
+  system_memory_percent: number | null
+  system_memory_available_mb: number | null
+  browser_memory_mb: number | null
+  queue_size: number
+  active_tasks: number
+  psutil_available: boolean
+}
+
+export interface BuildInfo {
+  version: string
+  commit: string
+  commit_short: string
+  branch: string
+  commit_date: string
+  dirty: boolean
+  repo: string
+}
+
+export interface ConfigBackup {
+  filename: string
+  created_at: number
+}
+
 // ---------- Endpoints ----------
 
 export const api = {
   health: () => request<HealthResponse>("/api/health"),
+
+  system: {
+    health: () => request<HealthReport>("/api/system/health"),
+    diagnostics: () => request<DiagnosticReport>("/api/system/diagnostics"),
+    resources: () => request<ResourceSnapshot>("/api/system/resources"),
+    version: () => request<BuildInfo>("/api/system/version"),
+    exportConfig: () => request<{ exported_at: string; app_name: string; settings: Record<string, unknown> }>(
+      "/api/system/config/export"
+    ),
+    backupConfig: () => request<{ filename: string }>("/api/system/config/backup", { method: "POST" }),
+    listBackups: () => request<{ backups: ConfigBackup[] }>("/api/system/config/backups"),
+    restoreConfig: (filename: string) =>
+      request<{ applied: Record<string, unknown> }>("/api/system/config/restore", {
+        method: "POST",
+        body: JSON.stringify({ filename }),
+      }),
+  },
 
   agent: {
     status: () => request<AgentStatus>("/api/agent/status"),

@@ -40,34 +40,44 @@ Status legend: ✅ Done · 🚧 In Progress · ⏳ Planned · 🔭 Vision (not y
 
 ---
 
-## v1.1 — Planned ⏳
+## v1.1 — Completed ✅
 
-**Theme:** Finish the remaining Phase 2 backlog and close out autonomous-operation gaps.
+**Theme:** Close out autonomous-operation gaps and add an operational layer on top
+of the agent.
 
 ### Goals
-- Complete the items from the Phase 2 plan that were not yet in v1.0.
 - Make the agent runtime fully autonomous and self-recovering across restarts.
+- Give the operator (dashboard + Telegram) real visibility into system health,
+  and a way to have a natural conversation with the agent instead of memorizing
+  commands.
 
 ### Major Features
 - **Autonomous Agent Runtime**: single Start/Stop/Pause/Resume lifecycle for the
-  agent as a whole, with interrupted-task recovery on restart and browser-crash
-  retry (building on `backend/planner/agent_runtime.py`), plus the `/api/agent`
-  REST + WebSocket surface and the frontend Agent dashboard.
-- **AI model switching**: allow the planner/decision engine to switch between
-  configured LLM providers/models without a restart.
-- **Chrome Profile Manager**: manage multiple persistent browser profiles
-  (cookies/sessions) instead of a single implicit profile.
-- **Memory improvements**: explicit failed-workflow save (not just successes)
-  and a reuse-ranking mechanism so the planner prefers previously successful
-  approaches over cold starts.
+  agent as a whole, with interrupted-task recovery on restart
+  (`backend/planner/agent_runtime.py`), the `/api/agent` REST + WebSocket surface,
+  and the frontend Agent dashboard.
+- **System Monitoring**: Health Dashboard, on-demand Diagnostics, and a Resource
+  Monitor (CPU/RAM/browser memory/queue depth), exposed via `/api/system/*` and a
+  new System page in the dashboard (`backend/monitoring/`).
+- **Configuration Manager**: export/import/backup/restore for non-secret settings
+  (`backend/config/config_manager.py`).
+- **GitHub Integration**: automatic version/commit/branch/build info
+  (`backend/integrations/github_info.py`).
+- **Telegram AI Chat**: the bot now understands free-form natural language across
+  the full command surface (task management, pause/resume/stop/restart, health,
+  diagnostics, resources, logs, screenshots, reports), not just a fixed command
+  list — see `backend/telegram/bot.py`.
 
 ### Improvements
-- Expand test coverage for the new agent runtime, model-switching, and memory paths.
-- Update `docs/ARCHITECTURE.md` with the finalized autonomous-runtime data flow.
+- 22 new backend tests covering system monitoring routes and the expanded
+  Telegram bot (115/115 backend tests passing).
+- Fixed a config round-trip bug where importing exported settings could silently
+  corrupt enum-typed fields (`browser_channel`, `llm_provider`) on the shared
+  settings singleton.
 
 ### Breaking Changes
-- None expected. All items extend existing modules (`planner`, `wallet`, `memory`,
-  `browser`) per the standing backward-compatibility rule.
+- None. All items extend existing modules (`planner`, `telegram`, `api`) per the
+  standing backward-compatibility rule.
 
 ---
 
@@ -80,8 +90,15 @@ Status legend: ✅ Done · 🚧 In Progress · ⏳ Planned · 🔭 Vision (not y
 - Improve visibility and control for operators running the agent in production.
 
 ### Major Features
+- **AI model switching**: allow the planner/decision engine to switch between
+  configured LLM providers/models without a restart. *(carried over from v1.1)*
+- **Chrome Profile Manager**: manage multiple persistent browser profiles
+  (cookies/sessions) instead of a single implicit profile. *(carried over from v1.1)*
+- **Memory improvements**: explicit failed-workflow save (not just successes)
+  and a reuse-ranking mechanism so the planner prefers previously successful
+  approaches over cold starts. *(carried over from v1.1)*
 - Expanded plugin catalog (additional notification/integration plugins beyond Telegram/Discord).
-- Structured observability: metrics/tracing hooks around the decision loop and task queue, surfaced in the dashboard.
+- Structured observability: metrics/tracing hooks around the decision loop and task queue, surfaced in the dashboard — building on the v1.1 Health/Resource monitors rather than replacing them.
 - Configurable retry/backoff and rate-limit policies for browser automation and LLM calls.
 - Multi-task concurrency controls (safe parallel task execution where site/session isolation allows it).
 

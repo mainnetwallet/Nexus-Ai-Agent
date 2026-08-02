@@ -207,6 +207,29 @@ It composes the existing `TaskQueueService`, `BrowserEngine`, `AgentLoop`, and
   start/stop/pause/resume HTTP surface.
 - Dashboard: new **Agent** page (see "Frontend dashboard" below).
 
+### System Monitoring + Telegram AI Chat (new, v1.1)
+
+- **`backend/monitoring/health.py`** — `HealthMonitor`: aggregated health across
+  backend, database, browser, memory, AI provider, Telegram, and WebSocket layer.
+- **`backend/monitoring/diagnostics.py`** — `DiagnosticsService`: deeper on-demand
+  environment check (Playwright, AI API key, DB, plugins, memory, env vars) with
+  JSON and plain-text reports.
+- **`backend/monitoring/resources.py`** — `ResourceMonitor`: CPU, process/system RAM,
+  estimated browser memory, queue depth, active tasks (via `psutil`).
+- **`backend/config/config_manager.py`** — export/import/backup/restore for
+  non-secret settings.
+- **`backend/integrations/github_info.py`** — version/commit/branch/build info from
+  local git metadata.
+- **`backend/api/routes_system.py`** — `/api/system/{health,diagnostics,resources,
+  version,config/*}`, same bearer-auth dependency as every other router.
+- **`backend/telegram/bot.py`** — upgraded into a full AI chat interface: natural
+  language now covers task management, pause/resume/stop/restart, health,
+  diagnostics, resources, logs, screenshots, and reports — not just a fixed
+  command list. `/status /report /tasks /browser` answer with real live data.
+- Dashboard: new **System** page.
+- Tests: `backend/tests/test_system_routes.py` (9) and
+  `backend/tests/test_telegram_bot.py` (13).
+
 ## What's implemented and working
 
 - **`backend/browser/engine.py`** — Playwright wrapper: navigate, smart_click/type/
@@ -243,10 +266,11 @@ It composes the existing `TaskQueueService`, `BrowserEngine`, `AgentLoop`, and
   Stop/Pause/Resume lifecycle for the agent as a whole, persisted status, startup
   recovery of interrupted tasks, browser-crash retry (see "Autonomous Agent Runtime"
   above).
-- **`backend/telegram/bot.py`** — all requested commands (`/start /help /status /task
-  /browser /pause /resume /stop /report /logs /screenshot /memory /settings /tasks`)
-  plus free-form natural-language routing ("pause the browser", "complete all tasks on
-  https://... using Wallet-01").
+- **`backend/telegram/bot.py`** — full AI chat interface: all fixed commands
+  (`/start /help /status /task /browser /pause /resume /stop /restart /report /logs
+  /screenshot /memory /settings /tasks /health /diagnostics /resources`) plus
+  natural-language routing across the same surface ("how's everything doing?",
+  "restart the agent", "complete all tasks on https://... using Wallet-01").
 - **`backend/api/`** — FastAPI REST + WebSocket layer (tasks, reports, memory search,
   wallet metadata registration, live logs, live plugin events), bearer-token auth.
 - **`backend/database/models.py`** — Task/TaskStep/Report/WalletRecord/MemoryEntry/
@@ -332,7 +356,7 @@ docker/        Dockerfile(s)
 docs/          (reserved for architecture docs)
 frontend/      React dashboard (Vite + TypeScript + Tailwind v4 + shadcn-style UI)
   src/lib/api.ts  -- typed client for every backend route
-  src/pages/       -- Home, Agent, Browser, Tasks, Memory, Reports, Logs, Settings
+  src/pages/       -- Home, Agent, Browser, Tasks, Memory, Reports, Logs, Settings, System
 ```
 
 ## Frontend dashboard
@@ -369,6 +393,9 @@ Pages:
   counts.
 - **Logs** — tails `GET /api/logs` (new route, see below) with live polling,
   level-colored lines, and a text filter.
+- **System** — Health, Diagnostics, and Resource panels (`GET /api/system/
+  health` / `/diagnostics` / `/resources`), build info (`GET /api/system/
+  version`), and a one-click config backup (`POST /api/system/config/backup`).
 - **Settings** — reads/patches `GET`/`PATCH /api/settings` (new route, see
   below): wallet approval policy, vision/OCR fallback, live-session tuning.
   Never exposes API keys, the auth token, or the Telegram token.

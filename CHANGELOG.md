@@ -4,6 +4,76 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - v1.1 System Monitoring & Telegram AI Chat
+
+Extends the existing agent with an operational layer (health/diagnostics/resources/
+config backup/build info) and upgrades the Telegram bot into a full conversational
+interface. No architectural changes — every addition composes existing modules
+(`TaskQueueService`, `AgentRuntime`, `MemoryStore`, `PluginRegistry`, `LLMClient`)
+rather than re-implementing them.
+
+### Added — System Monitoring
+- `backend/monitoring/health.py` — `HealthMonitor`: aggregated health check across
+  backend, database, browser, memory, AI provider, Telegram, and WebSocket layer.
+  Each check is isolated (one failing component never blocks the others) and timed.
+- `backend/monitoring/diagnostics.py` — `DiagnosticsService`: deeper on-demand
+  environment check (Playwright installed, AI API key present, DB reachable,
+  plugins loadable, memory store initialized, required env vars set), with both
+  a structured JSON report and a human-readable text report.
+- `backend/monitoring/resources.py` — `ResourceMonitor`: CPU%, process/system RAM,
+  an estimate of Chromium child-process memory, task queue depth, and active task
+  count. Uses `psutil` when available and degrades gracefully (returns `null`
+  metrics, never raises) when it isn't.
+- `backend/config/config_manager.py` — `ConfigManager`: export/import/backup/restore
+  for the same non-secret settings surface `routes_settings.py` already exposes.
+  Secrets (API keys, tokens) are never included. Backups are timestamped JSON
+  snapshots under `data/config_backups/`.
+- `backend/integrations/github_info.py` — reads local git metadata (commit, branch,
+  dirty flag, nearest tag as version, remote repo URL) for build/version info with
+  no network call and no token required.
+- `backend/api/routes_system.py` — new `/api/system/*` routes composing all of the
+  above: `GET /health`, `GET /diagnostics` (+ `/diagnostics/text`), `GET /resources`,
+  `GET /version`, `GET/POST /config/export|import|backup|backups|restore`.
+- Frontend: new `System` page (`frontend/src/pages/System.tsx`) rendering health,
+  diagnostics, resources, and build info, with a one-click config backup button.
+  Added to the sidebar nav and `api.system.*` typed client methods.
+- 9 new backend tests (`backend/tests/test_system_routes.py`), including an explicit
+  assertion that config export never leaks secret fields.
+
+### Added — Telegram AI Chat
+- `backend/telegram/bot.py`: added `/health`, `/diagnostics`, `/resources`, and
+  `/restart` commands.
+- Expanded the natural-language intent schema (`INTENT_SYSTEM_PROMPT`) to cover
+  `health`, `diagnostics`, `resources`, `restart`, `tasks`, `report`, and
+  `browser_status` in addition to the existing task/pause/resume/stop intents, with
+  guidance examples so free-form phrasing ("how's everything doing?", "restart the
+  agent") routes correctly.
+- `/status`, `/report`, `/tasks`, and `/browser` now return real live data (agent
+  runtime status, recent task list, recent reports, live browser URL/title) instead
+  of pointing the user at the REST API.
+- `/pause`, `/resume`, and `/stop` now route through `AgentRuntime` when the bot is
+  constructed with the full `AppState` (`NexusTelegramBot(queue, app_state=state)`),
+  giving Telegram the same single Start/Stop/Pause/Resume surface as the dashboard.
+  Falls back to direct `TaskQueueService` calls when `app_state` isn't provided, so
+  existing callers that only pass `queue` are unaffected.
+- 13 new backend tests (`backend/tests/test_telegram_bot.py`) covering the live-data
+  helpers, NL intent routing (including LLM-failure and unknown-intent fallbacks),
+  and graceful degradation when `app_state` is `None`.
+
+### Fixed
+- `ConfigManager.import_settings` was assigning raw strings onto enum-typed settings
+  fields (`browser_channel`, `llm_provider`). Pydantic `BaseSettings` does not
+  re-validate plain attribute assignment, so a config export→import round-trip
+  silently corrupted the shared `settings` singleton for the rest of the process
+  (caught by the full test suite, not the isolated new tests — a reminder to always
+  run the whole suite, not just the new file). Now re-parses enum fields through
+  their enum class before assigning.
+
+### Verified
+- Backend: 115/115 tests passing (`pytest backend/tests`), up from 102.
+- Frontend: `tsc -b` clean, `vite build` succeeds (1895 modules, no errors), `oxlint`
+  clean (0 errors, 1 pre-existing informational warning unrelated to this change).
+
 ## [1.0.0] - v1.0 Production Hardening Pass
 
 Full repository review ahead of the first stable release. No architectural

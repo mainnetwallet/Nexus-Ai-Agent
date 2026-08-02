@@ -11,6 +11,7 @@ import {
   Radio,
   Wallet,
   Blocks,
+  HeartPulse,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useBackendHealth } from "@/hooks/use-backend-health"
@@ -24,6 +25,7 @@ const NAV = [
   { to: "/memory", label: "Memory", icon: BrainCircuit },
   { to: "/reports", label: "Reports", icon: FileBarChart2 },
   { to: "/plugins", label: "Plugins", icon: Blocks },
+  { to: "/system", label: "System", icon: HeartPulse },
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: Settings2 },
 ]

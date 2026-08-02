@@ -11,6 +11,7 @@ import { Reports } from "@/pages/Reports"
 import { Logs } from "@/pages/Logs"
 import { Settings } from "@/pages/Settings"
 import { Plugins } from "@/pages/Plugins"
+import { System } from "@/pages/System"
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
             <Route path="logs" element={<Logs />} />
             <Route path="settings" element={<Settings />} />
             <Route path="plugins" element={<Plugins />} />
+            <Route path="system" element={<System />} />
           </Route>
         </Routes>
       </BrowserRouter>
