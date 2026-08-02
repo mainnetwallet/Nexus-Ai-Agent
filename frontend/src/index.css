@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-bg: #0a0f1a;
+  --color-surface: #111a2b;
+  --color-surface-raised: #16213570;
+  --color-border: #22304a;
+  --color-border-strong: #2e405f;
+  --color-text: #e7edf7;
+  --color-text-muted: #8b98b3;
+  --color-text-faint: #5c6a86;
+
+  --color-signal-amber: #e8a33d;
+  --color-signal-amber-dim: #e8a33d26;
+  --color-signal-cyan: #4fd1c5;
+  --color-signal-cyan-dim: #4fd1c526;
+  --color-signal-green: #3dd68c;
+  --color-signal-green-dim: #3dd68c26;
+  --color-signal-red: #e5484d;
+  --color-signal-red-dim: #e5484d26;
+  --color-signal-violet: #9b8cf2;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  background-image:
+    radial-gradient(circle at 15% 0%, #16213580 0%, transparent 45%),
+    radial-gradient(circle at 85% 10%, #1a2a3d60 0%, transparent 40%);
+  background-attachment: fixed;
+}
+
+::selection {
+  background: var(--color-signal-amber-dim);
+  color: var(--color-text);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 8px;
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 var(--color-signal-cyan-dim); }
+  100% { box-shadow: 0 0 0 8px transparent; }
+}
+.live-pulse {
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+
+@keyframes scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+.scan-line {
+  animation: scan 2.4s linear infinite;
+}
