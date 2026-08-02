@@ -258,10 +258,64 @@ export interface HealthResponse {
   app: string
 }
 
+// ---------- Agent Runtime ----------
+
+export type AgentRuntimeStatusValue = "stopped" | "starting" | "running" | "paused" | "stopping"
+
+export interface AgentQueueStatus {
+  worker_paused: boolean
+  active_task_id: string | null
+  paused_task_ids: string[]
+}
+
+export interface AgentBrowserState {
+  active: boolean
+  url: string
+  title: string
+}
+
+export interface AgentActiveWallet {
+  id: string
+  label: string
+  address: string | null
+  wallet_type: string
+  network: string | null
+  status: string
+}
+
+export interface AgentStatus {
+  status: AgentRuntimeStatusValue
+  started_at: string | null
+  stopped_at: string | null
+  current_task_id: string | null
+  current_website: string | null
+  current_action: string | null
+  current_target: string | null
+  current_reasoning: string | null
+  tasks_completed: number
+  tasks_failed: number
+  steps_executed: number
+  recoveries_performed: number
+  last_heartbeat_at: string | null
+  uptime_seconds: number
+  queue: AgentQueueStatus
+  browser: AgentBrowserState
+  active_wallet: AgentActiveWallet | null
+  error?: string
+}
+
 // ---------- Endpoints ----------
 
 export const api = {
   health: () => request<HealthResponse>("/api/health"),
+
+  agent: {
+    status: () => request<AgentStatus>("/api/agent/status"),
+    start: () => request<AgentStatus>("/api/agent/start", { method: "POST" }),
+    stop: () => request<AgentStatus>("/api/agent/stop", { method: "POST" }),
+    pause: () => request<AgentStatus>("/api/agent/pause", { method: "POST" }),
+    resume: () => request<AgentStatus>("/api/agent/resume", { method: "POST" }),
+  },
 
   tasks: {
     list: () => request<TaskSummary[]>("/api/tasks"),

@@ -23,11 +23,19 @@ logger = logging.getLogger("nexus.queue")
 
 
 class TaskQueueService:
-    def __init__(self, memory: MemoryStore, wallet: WalletManager, notify_fn=None, plugin_registry=None) -> None:
+    def __init__(
+        self, memory: MemoryStore, wallet: WalletManager, notify_fn=None, plugin_registry=None, activity_fn=None
+    ) -> None:
         self.memory = memory
         self.wallet = wallet
         self.notify_fn = notify_fn  # optional async callable(str) for live progress
         self.plugin_registry = plugin_registry  # optional PluginRegistry, threaded into each task's AgentLoop
+        # Optional async callable(dict) fed structured task/step events (event,
+        # task_id, website, action, target, reasoning, success, status, ...).
+        # Used by AgentRuntime (backend/planner/agent_runtime.py) to maintain a
+        # persisted "current action" view for the dashboard, without this class
+        # needing to know anything about AgentRuntime or the database row it owns.
+        self.activity_fn = activity_fn
         self._paused = asyncio.Event()
         self._paused.set()  # start unpaused (global worker pause)
         self._cancelled_ids: set[str] = set()
@@ -166,6 +174,19 @@ class TaskQueueService:
                     f"[{task.website}] step {step_result.index}: {step_result.action} "
                     f"'{step_result.target}' -> {'ok' if step_result.success else 'FAILED'}"
                 )
+            if self.activity_fn:
+                await self.activity_fn(
+                    {
+                        "event": "step",
+                        "task_id": task.id,
+                        "website": task.website,
+                        "index": step_result.index,
+                        "action": step_result.action,
+                        "target": step_result.target,
+                        "reasoning": step_result.reasoning,
+                        "success": step_result.success,
+                    }
+                )
 
         async def wait_if_paused():
             if pause_event.is_set():
@@ -188,6 +209,11 @@ class TaskQueueService:
             async with get_session() as session:
                 db_task = await session.get(Task, task.id)
                 db_task.status = TaskStatus.RUNNING
+
+            if self.activity_fn:
+                await self.activity_fn(
+                    {"event": "task_start", "task_id": task.id, "website": task.website, "goal": task.goal}
+                )
 
             loop = AgentLoop(
                 engine=engine,
@@ -227,14 +253,40 @@ class TaskQueueService:
 
             if self.notify_fn:
                 await self.notify_fn(f"Task on {task.website} finished: {outcome.status} - {outcome.summary}")
+            if self.activity_fn:
+                await self.activity_fn(
+                    {"event": "task_finish", "task_id": task.id, "status": outcome.status, "summary": outcome.summary}
+                )
 
         except Exception as exc:
+            # Covers browser crashes (Playwright TargetClosedError and similar)
+            # as well as any other unexpected failure mid-task. Recovered the
+            # same way a normal failed outcome is: retried up to max_retries
+            # before being marked FAILED, instead of always giving up after
+            # one crash. A fresh BrowserEngine is launched for the retry (see
+            # top of this method / `finally` below), so a crashed browser
+            # doesn't take future attempts down with it.
             logger.exception("Task %s crashed", task.id)
             async with get_session() as session:
                 db_task = await session.get(Task, task.id)
-                db_task.status = TaskStatus.FAILED
+                if db_task.retry_count < db_task.max_retries:
+                    db_task.retry_count += 1
+                    db_task.status = TaskStatus.QUEUED
+                else:
+                    db_task.status = TaskStatus.FAILED
+                report = Report(
+                    task_id=task.id,
+                    status=db_task.status.value,
+                    summary=f"Crashed: {exc}",
+                    execution_seconds=time.time() - started,
+                    tx_hashes=[],
+                    screenshots=[],
+                )
+                session.add(report)
             if self.notify_fn:
                 await self.notify_fn(f"Task on {task.website} crashed: {exc}")
+            if self.activity_fn:
+                await self.activity_fn({"event": "task_crash", "task_id": task.id, "error": str(exc)})
         finally:
             self._task_pause_events.pop(task.id, None)
             if self.current_engine is engine:

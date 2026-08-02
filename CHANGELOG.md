@@ -47,6 +47,62 @@ fixes only.
 
 ## [Unreleased] - Phase 2
 
+### Added — Autonomous Agent Runtime (Phase 2, item 11)
+- `backend/planner/agent_runtime.py`: new `AgentRuntime` — a single Start/Stop/
+  Pause/Resume lifecycle for the agent as a whole (distinct from
+  `TaskQueueService`'s existing per-task pause/resume), composing the existing
+  `TaskQueueService`, `BrowserEngine`, `AgentLoop`, and `LiveSessionManager`
+  rather than re-implementing any of them.
+  - `start()` recovers tasks interrupted by an unclean shutdown, then starts
+    (or resumes) `TaskQueueService`'s background worker loop.
+  - `stop()` cancels the in-flight task (if any) and pauses the worker loop.
+  - `pause()`/`resume()` pause/resume the worker loop and the in-flight task together.
+  - `status()` returns persisted status, current task/action/target/reasoning,
+    and runtime statistics (tasks completed/failed, steps executed, recoveries
+    performed).
+- `backend/database/models.py`: new `AgentRuntimeState` (singleton row,
+  `id="singleton"`) and `AgentRuntimeStatus` enum (`stopped`/`starting`/
+  `running`/`paused`/`stopping`) — persists agent status across process restarts.
+- Startup/session recovery: any `Task` left in `PLANNING`/`RUNNING`/`PAUSED`
+  status by an unclean shutdown is requeued as `QUEUED` on `AgentRuntime.start()`,
+  since no live browser or asyncio task can still be backing it in a fresh
+  process. Counted in `recoveries_performed`.
+- Browser crash recovery: `TaskQueueService._run_task`'s crash handler now
+  retries a crashed task up to its existing `max_retries` (same policy as a
+  normal failed outcome) before marking it `FAILED`, instead of giving up
+  after a single crash. A fresh `BrowserEngine` is launched on the retry.
+- `backend/planner/task_queue.py`: `TaskQueueService` gained an optional
+  `activity_fn` hook (async callable(dict), events: `task_start`/`step`/
+  `task_finish`/`task_crash`) used by `AgentRuntime` to maintain a live
+  "current action" view. Purely additive — `notify_fn` and plugin dispatch
+  are unchanged.
+- `backend/api/routes_agent.py`: new `/api/agent` routes (same bearer-auth
+  dependency as every other router):
+  - `POST /api/agent/start` / `/stop` / `/pause` / `/resume`
+  - `GET /api/agent/status` — merges `AgentRuntime.status()` with the existing
+    live browser session (`state.live_session`) and active wallet
+    (`state.wallet_registry.get_active_wallet()`), rather than duplicating
+    either data source.
+  - `WS /api/agent/ws/live` — pushes each structured activity event as it happens.
+- `backend/main.py`: `AgentRuntime` is created and `start()`-ed automatically
+  in the lifespan (background execution from process boot), replacing the
+  previous direct `state.queue.start_worker()` call.
+- Frontend: new **Agent** dashboard page (`frontend/src/pages/Agent.tsx`) —
+  Start/Stop/Pause/Resume controls, agent status badge, current task/action,
+  AI reasoning summary, browser state, active wallet, and runtime statistics.
+  Wired into `App.tsx` routing and the `AppShell` sidebar nav. New `api.agent`
+  client methods and `AgentStatus`/`AgentQueueStatus`/`AgentBrowserState`/
+  `AgentActiveWallet` types in `frontend/src/lib/api.ts`.
+- Tests: `backend/tests/test_agent_runtime.py` (13 tests — status defaults,
+  start/stop/pause/resume transitions, in-flight task pause/resume/cancel,
+  interrupted-task recovery, activity-driven statistics, broadcast callback)
+  and `backend/tests/test_routes_agent.py` (5 tests — full HTTP surface,
+  uninitialized-runtime error responses). Full suite: 93/93 passing.
+- No redesign: every existing module (`AgentLoop`, `TaskQueueService`,
+  `BrowserEngine`, `LiveSessionManager`, `WalletManager`/`WalletRegistry`,
+  `DecisionEngine`) is unchanged in behavior and reused as-is; this feature
+  only adds a supervising layer and the two small, additive hooks described above.
+
 ### Added — Plugin Framework (Phase 2, item 10)
 - `backend/plugins/base.py`: new `NexusPlugin` base class with no-op-default hooks —
   `on_load`/`on_unload` (lifecycle) and `on_task_start`/`on_step`/`on_task_finish`/

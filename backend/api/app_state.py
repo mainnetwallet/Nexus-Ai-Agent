@@ -10,6 +10,7 @@ from backend.wallet.registry import WalletRegistry
 if TYPE_CHECKING:
     from backend.browser.live_session import LiveSessionManager
     from backend.plugins.registry import PluginRegistry
+    from backend.planner.agent_runtime import AgentRuntime
 
 
 class AppState:
@@ -19,6 +20,7 @@ class AppState:
     queue: Optional[TaskQueueService] = None
     live_session: Optional["LiveSessionManager"] = None
     plugins: Optional["PluginRegistry"] = None
+    agent: Optional["AgentRuntime"] = None
 
 
 state = AppState()

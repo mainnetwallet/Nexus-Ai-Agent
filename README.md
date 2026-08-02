@@ -165,6 +165,48 @@ touching `BrowserEngine`/`TaskQueueService` behavior:
   clients, graceful handling of no-active-page/screenshot failures, dead-client
   cleanup, start/stop lifecycle).
 
+### Autonomous Agent Runtime (new)
+
+`backend/planner/agent_runtime.py` turns Nexus-Agent into a continuously running
+agent with a single Start/Stop/Pause/Resume lifecycle for the agent as a whole
+(distinct from `TaskQueueService`'s existing per-task pause/resume), persisted
+across restarts, and self-healing after an unclean shutdown or browser crash.
+It composes the existing `TaskQueueService`, `BrowserEngine`, `AgentLoop`, and
+`LiveSessionManager` rather than re-implementing any of them:
+
+- **`AgentRuntime`** (`state.agent`, created and auto-started in `main.py`'s
+  lifespan) — `start()` / `stop()` / `pause()` / `resume()` drive
+  `TaskQueueService`'s worker loop and current in-flight task together, and
+  persist status to a new `AgentRuntimeState` singleton row so a dashboard
+  reload (or a backend restart) still shows the last known state.
+- **Recovery** — on `start()`, any task left in `PLANNING`/`RUNNING`/`PAUSED`
+  status (an artifact of a process that died mid-task) is requeued as `QUEUED`
+  automatically, since no live browser or asyncio task can still be backing it
+  in a fresh process. `recoveries_performed` in the status view counts this.
+- **Browser crash recovery** — `TaskQueueService._run_task`'s crash handler now
+  retries a crashed task (browser crash, Playwright error, or anything else
+  unexpected) up to its existing `max_retries` before marking it `FAILED`,
+  instead of giving up after one crash. A fresh `BrowserEngine` is launched on
+  the retry.
+- **Live monitoring** — `TaskQueueService` gained an optional `activity_fn`
+  hook (`task_start` / `step` / `task_finish` / `task_crash` events) that
+  `AgentRuntime` uses to maintain "current action / target / reasoning" in
+  real time, without touching `notify_fn` or the plugin dispatch that were
+  already there.
+- **`backend/api/routes_agent.py`** — new `/api/agent` routes, same
+  bearer-auth dependency as every other router:
+  - `POST /api/agent/start` / `/stop` / `/pause` / `/resume`
+  - `GET /api/agent/status` — runtime status + current task/action/reasoning +
+    runtime statistics, merged with the existing live browser session
+    (`state.live_session`) and active wallet (`state.wallet_registry`) rather
+    than duplicating either.
+  - `WS /api/agent/ws/live` — pushes each structured activity event as it happens.
+- Tests: `backend/tests/test_agent_runtime.py` (13 tests) and
+  `backend/tests/test_routes_agent.py` (5 tests) — status transitions,
+  recovery of interrupted tasks, activity-driven statistics, and the full
+  start/stop/pause/resume HTTP surface.
+- Dashboard: new **Agent** page (see "Frontend dashboard" below).
+
 ## What's implemented and working
 
 - **`backend/browser/engine.py`** — Playwright wrapper: navigate, smart_click/type/
@@ -197,14 +239,18 @@ touching `BrowserEngine`/`TaskQueueService` behavior:
 - **`backend/planner/task_queue.py`** — priority queue with pause/resume/cancel/retry
   (both queue-wide and per-task), `scheduled_for` deferred scheduling, and persistent
   history via the `Task`/`Report` tables; drives the agent loop per task, writes reports.
+- **`backend/planner/agent_runtime.py`** — Autonomous Agent Runtime: single Start/
+  Stop/Pause/Resume lifecycle for the agent as a whole, persisted status, startup
+  recovery of interrupted tasks, browser-crash retry (see "Autonomous Agent Runtime"
+  above).
 - **`backend/telegram/bot.py`** — all requested commands (`/start /help /status /task
   /browser /pause /resume /stop /report /logs /screenshot /memory /settings /tasks`)
   plus free-form natural-language routing ("pause the browser", "complete all tasks on
   https://... using Wallet-01").
 - **`backend/api/`** — FastAPI REST + WebSocket layer (tasks, reports, memory search,
   wallet metadata registration, live logs, live plugin events), bearer-token auth.
-- **`backend/database/models.py`** — Task/TaskStep/Report/WalletRecord/MemoryEntry
-  SQLAlchemy models.
+- **`backend/database/models.py`** — Task/TaskStep/Report/WalletRecord/MemoryEntry/
+  AgentRuntimeState SQLAlchemy models.
 - Docker + docker-compose, `.env.example`, a passing unit test for the agent loop.
 
 ## Quick start
@@ -239,6 +285,13 @@ While a task is running, watch it live:
 - `GET /api/browser/screenshot` — latest frame as a JPEG
 - `WS /api/browser/ws/live` — push stream of frames as they're captured
 
+The agent itself runs continuously in the background from the moment the
+backend starts (auto-started in `main.py`'s lifespan). Control it as a whole:
+- `POST /api/agent/start` / `/stop` / `/pause` / `/resume`
+- `GET /api/agent/status` — status, current task/action/reasoning, browser
+  state, active wallet, and runtime statistics in one call
+- `WS /api/agent/ws/live` — push stream of activity events
+
 Run tests:
 ```bash
 pytest backend/tests -q
@@ -268,7 +321,7 @@ docker compose up --build
 backend/
   api/         REST + WebSocket routes, auth
   browser/     Playwright engine (generic, no site logic) + live session streaming
-  planner/     LLM client, agent loop, task queue
+  planner/     LLM client, agent loop, task queue, autonomous agent runtime
   memory/      SQLite + ChromaDB store
   vision/      OCR + vision-LLM perception fallback
   wallet/      Non-custodial approval automation
@@ -279,7 +332,7 @@ docker/        Dockerfile(s)
 docs/          (reserved for architecture docs)
 frontend/      React dashboard (Vite + TypeScript + Tailwind v4 + shadcn-style UI)
   src/lib/api.ts  -- typed client for every backend route
-  src/pages/       -- Home, Browser, Tasks, Memory, Reports, Logs, Settings
+  src/pages/       -- Home, Agent, Browser, Tasks, Memory, Reports, Logs, Settings
 ```
 
 ## Frontend dashboard
@@ -302,6 +355,10 @@ npm run build    # production build -> frontend/dist
 Pages:
 - **Home** — live counts (running/queued/succeeded/failed), recent tasks, recent
   reports, and current browser-session status at a glance.
+- **Agent** — Start/Stop/Pause/Resume the Autonomous Agent Runtime; shows agent
+  status, current task/action, AI reasoning summary, browser state, active
+  wallet, and runtime statistics (`GET /api/agent/status`, `POST /api/agent/
+  start` / `/stop` / `/pause` / `/resume`).
 - **Browser** — read-only live view: polls `GET /api/browser/screenshot` and
   shows `GET /api/browser/status` (URL, title, viewer count). No control surface.
 - **Tasks** — lists `GET /api/tasks`, and a "New task" dialog that posts to

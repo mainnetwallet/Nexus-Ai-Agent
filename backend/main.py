@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.app_state import state
+from backend.api.routes_agent import router as agent_router
 from backend.api.routes_browser import router as browser_router
 from backend.api.routes_logs import WebSocketLogBroadcastHandler
 from backend.api.routes_logs import router as logs_router
@@ -21,6 +22,7 @@ from backend.browser.live_session import LiveSessionManager
 from backend.config.settings import LOG_DIR, settings
 from backend.database.session import init_db
 from backend.memory.store import MemoryStore
+from backend.planner.agent_runtime import AgentRuntime
 from backend.planner.task_queue import TaskQueueService
 from backend.plugins.registry import PluginRegistry
 from backend.wallet.manager import WalletManager
@@ -69,7 +71,9 @@ async def lifespan(app: FastAPI):
     state.queue = TaskQueueService(
         memory=state.memory, wallet=state.wallet, notify_fn=_broadcast_notify, plugin_registry=state.plugins
     )
-    state.queue.start_worker()
+
+    state.agent = AgentRuntime(queue=state.queue, on_activity_broadcast=_broadcast_agent_activity)
+    await state.agent.start()  # background execution: recovers interrupted tasks, then starts the worker loop
 
     state.live_session = LiveSessionManager(
         engine_provider=lambda: state.queue.current_engine if state.queue else None,
@@ -122,6 +126,12 @@ async def _broadcast_plugin_event(payload: str) -> None:
     await broadcast(payload)
 
 
+async def _broadcast_agent_activity(event: dict) -> None:
+    from backend.api.routes_agent import broadcast
+
+    await broadcast(event)
+
+
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 app.add_middleware(
@@ -132,6 +142,7 @@ app.add_middleware(
 )
 
 app.include_router(tasks_router)
+app.include_router(agent_router)
 app.include_router(memory_router)
 app.include_router(reports_router)
 app.include_router(wallet_router)

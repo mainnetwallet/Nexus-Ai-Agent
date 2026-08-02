@@ -167,6 +167,45 @@ class WalletActivity(Base):
     wallet: Mapped[WalletRecord] = relationship(back_populates="activity")
 
 
+class AgentRuntimeStatus(str, enum.Enum):
+    STOPPED = "stopped"
+    STARTING = "starting"
+    RUNNING = "running"
+    PAUSED = "paused"
+    STOPPING = "stopping"
+
+
+class AgentRuntimeState(Base):
+    """
+    Single-row (id="singleton") persistent record of the Autonomous Agent
+    Runtime's status, so it survives process restarts -- e.g. the dashboard
+    can show "running" was the last known state, and startup recovery
+    (backend/planner/agent_runtime.py) can tell an unclean shutdown left
+    tasks stuck mid-flight and requeue them.
+    """
+
+    __tablename__ = "agent_runtime_state"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: "singleton")
+    status: Mapped[AgentRuntimeStatus] = mapped_column(SAEnum(AgentRuntimeStatus), default=AgentRuntimeStatus.STOPPED)
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    stopped_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    current_task_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    current_website: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    current_action: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    current_target: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    tasks_completed: Mapped[int] = mapped_column(default=0)
+    tasks_failed: Mapped[int] = mapped_column(default=0)
+    steps_executed: Mapped[int] = mapped_column(default=0)
+    recoveries_performed: Mapped[int] = mapped_column(default=0)
+
+    last_heartbeat_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class MemoryEntry(Base):
     """
     Structured record mirroring what is embedded into ChromaDB, kept here too

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom"
 import { AppShell } from "@/components/layout/AppShell"
 import { ToastProvider } from "@/components/toast-provider"
 import { Home } from "@/pages/Home"
+import { Agent } from "@/pages/Agent"
 import { Browser } from "@/pages/Browser"
 import { Tasks } from "@/pages/Tasks"
 import { Wallets } from "@/pages/Wallets"
@@ -18,6 +19,7 @@ export default function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<Home />} />
+            <Route path="agent" element={<Agent />} />
             <Route path="browser" element={<Browser />} />
             <Route path="tasks" element={<Tasks />} />
             <Route path="wallets" element={<Wallets />} />

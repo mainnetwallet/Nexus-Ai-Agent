@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom"
 import {
   LayoutDashboard,
+  Bot,
   MonitorPlay,
   ListChecks,
   BrainCircuit,
@@ -16,6 +17,7 @@ import { useBackendHealth } from "@/hooks/use-backend-health"
 
 const NAV = [
   { to: "/", label: "Home", icon: LayoutDashboard, end: true },
+  { to: "/agent", label: "Agent", icon: Bot },
   { to: "/browser", label: "Browser", icon: MonitorPlay },
   { to: "/tasks", label: "Tasks", icon: ListChecks },
   { to: "/wallets", label: "Wallets", icon: Wallet },
