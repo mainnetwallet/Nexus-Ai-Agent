@@ -4,6 +4,47 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [1.0.0] - v1.0 Production Hardening Pass
+
+Full repository review ahead of the first stable release. No architectural
+changes, no new features, no breaking changes — verification plus targeted
+fixes only.
+
+### Verified
+- All 43 backend modules import cleanly (no circular imports, no broken imports).
+- Full backend test suite passes: 75/75 (`pytest backend/tests`).
+- Frontend builds cleanly: `tsc -b && vite build` (1893 modules, no errors).
+- Frontend lint clean: `oxlint` (0 errors, 1 pre-existing informational warning).
+- No hardcoded secrets/keys/tokens in source (`backend`, `frontend/src`).
+- Every `backend/api/routes_*.py` module enforces `require_auth`; no
+  unauthenticated route groups.
+- CORS defaults verified safe (empty + non-debug = no origins allowed).
+- Docker image Playwright version (`v1.47.0-jammy`) matches
+  `requirements.txt` (`playwright==1.47.0`).
+- All `requirements.txt` entries confirmed in use, including indirect ones
+  (`aiosqlite` via the `sqlite+aiosqlite://` SQLAlchemy driver string,
+  `python-dotenv` via pydantic-settings' `env_file=".env"`).
+
+### Fixed
+- `backend/browser/engine.py`, `backend/browser/live_session.py`: several
+  `except Exception: pass/continue` blocks silently discarded errors with no
+  trace. Now logged at debug level (unchanged control flow, adds
+  observability for production debugging) — settle/wait timeouts, per-strategy
+  click/type fallback attempts, live-frame title reads, and websocket/poll
+  shutdown cleanup.
+- Removed 5 unused imports (`typing.Callable` in `database/session.py`,
+  `SYSTEM_PROMPT` in `planner/agent_loop.py`, `StepAction`/`NexusPlugin`/
+  `PluginContext` in test files) and 2 unused unpacked test variables in
+  `backend/tests/test_llm_client.py`, flagged by `ruff`.
+- Added `pytest.ini` pinning `asyncio_default_fixture_loop_scope = function`,
+  removing a pytest-asyncio deprecation warning on every test run.
+
+### Noted, not changed
+- `backend/plugins/registry.py` uses `compile()`/`exec()` to load plugin
+  files instead of `importlib` — this is intentional (see CHANGELOG entry
+  under Phase 2 Plugin Framework for the mtime-cache reasoning) and is the
+  mechanism the plugin system depends on, not a defect.
+
 ## [Unreleased] - Phase 2
 
 ### Added — Plugin Framework (Phase 2, item 10)

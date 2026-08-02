@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from backend.browser.engine import BrowserEngine
 from backend.memory.store import MemoryStore
-from backend.planner.decision_engine import SYSTEM_PROMPT, DecisionEngine
+from backend.planner.decision_engine import DecisionEngine
 from backend.planner.llm_client import LLMClient
 from backend.vision.vision_engine import VisionAnalyzer
 from backend.wallet.manager import WalletManager

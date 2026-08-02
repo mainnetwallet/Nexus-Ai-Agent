@@ -1,6 +1,5 @@
 import pytest
 
-from backend.plugins.base import NexusPlugin, PluginContext
 from backend.plugins.registry import PluginRegistry
 from backend.wallet.manager import WalletManager
 

@@ -156,8 +156,8 @@ class BrowserEngine:
     async def _settle(self, ms: int = 400) -> None:
         try:
             await self.page.wait_for_load_state("networkidle", timeout=5_000)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("_settle: networkidle wait skipped (%s)", exc)
         await asyncio.sleep(ms / 1000)
 
     # ------------------------------------------------------------------ #
@@ -184,7 +184,8 @@ class BrowserEngine:
                 await locator.click(timeout=timeout_ms // len(strategies))
                 await self._settle()
                 return True
-            except Exception:
+            except Exception as exc:
+                logger.debug("smart_click strategy failed for %r (%s)", selector_or_text, exc)
                 continue
         logger.warning("smart_click failed for %r", selector_or_text)
         return False
@@ -203,7 +204,8 @@ class BrowserEngine:
                     await locator.fill("")
                 await locator.fill(text)
                 return True
-            except Exception:
+            except Exception as exc:
+                logger.debug("smart_type strategy failed for %r (%s)", selector_or_label, exc)
                 continue
         logger.warning("smart_type failed for %r", selector_or_label)
         return False

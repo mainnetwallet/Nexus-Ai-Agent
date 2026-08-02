@@ -79,14 +79,16 @@ class LiveSessionManager:
             self._poll_task.cancel()
             try:
                 await self._poll_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                logger.debug("Poll loop raised on shutdown (%s)", exc)
             self._poll_task = None
         for ws in list(self._clients):
             try:
                 await ws.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error closing live session websocket (%s)", exc)
         self._clients.clear()
 
     # ------------------------------------------------------------------ #
@@ -190,8 +192,8 @@ class LiveSessionManager:
         self._latest_url = page.url
         try:
             self._latest_title = await page.title()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to read page title for live frame (%s)", exc)
         self._latest_task_id = self._task_id_provider()
         self._latest_captured_at = time.time()
         self._frame_count += 1

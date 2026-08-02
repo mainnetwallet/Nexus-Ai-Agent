@@ -20,7 +20,7 @@ def test_anthropic_text_request_shape(monkeypatch):
 
 def test_anthropic_vision_request_embeds_image():
     client = LLMClient(provider=LLMProvider.ANTHROPIC, model="claude-x")
-    url, headers, body = client._build_anthropic("claude-x", "sys", "look", 100, ("b64data", "image/png"))
+    _url, _headers, body = client._build_anthropic("claude-x", "sys", "look", 100, ("b64data", "image/png"))
 
     content = body["messages"][0]["content"]
     assert content[0]["type"] == "image"
@@ -51,7 +51,7 @@ def test_gemini_request_puts_key_in_url_not_body(monkeypatch):
     monkeypatch.setattr(settings_module.settings, "gemini_api_key", "gem-key")
     client = LLMClient(provider=LLMProvider.GEMINI, model="gemini-x")
 
-    url, headers, body = client._build_gemini("gemini-x", "sys", "hi", 100, None)
+    url, _headers, body = client._build_gemini("gemini-x", "sys", "hi", 100, None)
 
     assert "key=gem-key" in url
     assert "gem-key" not in str(body)

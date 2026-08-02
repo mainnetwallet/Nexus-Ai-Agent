@@ -1,6 +1,6 @@
 import pytest
 
-from backend.planner.agent_loop import AgentLoop, StepAction
+from backend.planner.agent_loop import AgentLoop
 
 
 class FakeLLM:
