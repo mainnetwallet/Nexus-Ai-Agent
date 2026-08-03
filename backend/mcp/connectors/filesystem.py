@@ -71,6 +71,23 @@ class FilesystemMCPConnector(MCPConnector):
                 destructive=True,
             ),
             MCPTool(
+                name="edit_file",
+                description=(
+                    "Find-and-replace a piece of text within an existing file, without rewriting the "
+                    "whole file. old_text must match exactly (including whitespace) and, by default, "
+                    "must appear exactly once -- pass expected_occurrences to allow/require a different "
+                    "count. Safer than write_file for changing part of a large or important file."
+                ),
+                input_schema={
+                    "path": "string",
+                    "old_text": "string",
+                    "new_text": "string",
+                    "expected_occurrences": "integer (optional, default 1)",
+                },
+                keywords=["edit file", "replace text", "find and replace", "modify file", "change text in file"],
+                destructive=True,
+            ),
+            MCPTool(
                 name="delete_file",
                 description="Delete a file.",
                 input_schema={"path": "string"},
@@ -93,6 +110,14 @@ class FilesystemMCPConnector(MCPConnector):
         if tool_name == "write_file":
             return await asyncio.to_thread(
                 self._write_file, arguments["path"], arguments.get("content", ""), bool(arguments.get("append", False))
+            )
+        if tool_name == "edit_file":
+            return await asyncio.to_thread(
+                self._edit_file,
+                arguments["path"],
+                arguments.get("old_text", ""),
+                arguments.get("new_text", ""),
+                arguments.get("expected_occurrences", 1),
             )
         if tool_name == "delete_file":
             return await asyncio.to_thread(self._delete_file, arguments["path"])
@@ -163,6 +188,36 @@ class FilesystemMCPConnector(MCPConnector):
         with open(target, mode, encoding="utf-8") as fh:
             fh.write(content)
         return {"path": str(target), "bytes_written": len(content.encode("utf-8")), "append": append}
+
+    def _edit_file(self, raw_path: str, old_text: str, new_text: str, expected_occurrences: Any) -> dict[str, Any]:
+        target = self._resolve(raw_path)
+        if not target.exists() or not target.is_file():
+            raise MCPToolError(f"file does not exist: {target}")
+        if not old_text:
+            raise MCPToolError("old_text is required and cannot be empty")
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise MCPToolError(f"file is not valid UTF-8 text, cannot edit: {target}") from exc
+
+        count = content.count(old_text)
+        if count == 0:
+            raise MCPToolError(f"old_text not found in {target}")
+        expected = 1 if expected_occurrences in (None, "") else int(expected_occurrences)
+        if count != expected:
+            raise MCPToolError(
+                f"old_text appears {count} time(s) in {target}, expected {expected} -- "
+                "make old_text more specific (include surrounding context) or pass the actual "
+                "expected_occurrences if multiple replacements are intentional"
+            )
+
+        new_content = content.replace(old_text, new_text)
+        target.write_text(new_content, encoding="utf-8")
+        return {
+            "path": str(target),
+            "occurrences_replaced": count,
+            "bytes_written": len(new_content.encode("utf-8")),
+        }
 
     def _delete_file(self, raw_path: str) -> dict[str, Any]:
         target = self._resolve(raw_path)
