@@ -117,6 +117,51 @@ async def test_task_message_enqueues_task(engine):
 
 
 @pytest.mark.asyncio
+async def test_classifier_receives_conversation_context_for_followup(engine):
+    """Reproduces: user says "Build an HTML page", agent asks a clarifying
+    question, user replies "An AI dashboard" -- the classifier call for the
+    follow-up must be given the prior exchange, not just the three-word
+    reply on its own, so it can resolve what the user is continuing."""
+    chat, _, _ = engine
+
+    chat.llm.complete_json.return_value = {"category": "conversation"}
+    chat.llm.complete_text.return_value = "What type of HTML page did you have in mind?"
+    await chat.send_message("s-followup", "Build an HTML page")
+
+    chat.llm.complete_json.return_value = {
+        "category": "task",
+        "goal": "Build an AI dashboard HTML page",
+    }
+    chat.llm.complete_text.return_value = "On it."
+    await chat.send_message("s-followup", "An AI dashboard")
+
+    # Second classifier call (index 1) is for the follow-up message.
+    assert chat.llm.complete_json.await_count == 2
+    _, followup_prompt = chat.llm.complete_json.await_args_list[1].args[:2]
+    assert "Build an HTML page" in followup_prompt
+    assert "What type of HTML page" in followup_prompt
+    assert "New message to classify: An AI dashboard" in followup_prompt
+
+    # The very first classifier call (no prior turns yet) must NOT carry a
+    # context block -- backward-compatible with a plain first message.
+    _, first_prompt = chat.llm.complete_json.await_args_list[0].args[:2]
+    assert first_prompt == "Build an HTML page"
+
+
+@pytest.mark.asyncio
+async def test_conversational_reply_also_receives_history_context(engine):
+    chat, _, _ = engine
+    chat.llm.complete_json.return_value = {"category": "conversation"}
+
+    await chat.send_message("s-ctx", "My favorite color is blue")
+    await chat.send_message("s-ctx", "What did I just tell you?")
+
+    _, second_user_prompt = chat.llm.complete_text.await_args_list[1].args[:2]
+    assert "My favorite color is blue" in second_user_prompt
+    assert "What did I just tell you?" in second_user_prompt
+
+
+@pytest.mark.asyncio
 async def test_agent_command_pause_and_resume(engine):
     chat, queue, agent = engine
     await agent.start()

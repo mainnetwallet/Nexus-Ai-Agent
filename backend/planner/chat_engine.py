@@ -52,6 +52,16 @@ logger = logging.getLogger("nexus.chat")
 
 CLASSIFIER_SYSTEM_PROMPT = """You classify a message sent to Nexus-Agent, an autonomous browser-automation \
 agent, into a structured intent. Respond with STRICT JSON only, no prose, no markdown fences:
+
+Context handling: the user prompt you receive may start with a "Conversation so far:" block (the most \
+recent prior turns of this session) followed by "New message to classify: <text>". When that block is \
+present, you MUST use it to resolve the new message before classifying -- pronouns ("it", "that one", \
+"the same site"), short replies that only make sense as an answer to your own previous clarifying \
+question, and any other implicit continuation of what was already being discussed. Classify the COMBINED \
+meaning as a single intent: e.g. if the assistant's last turn asked "What type of page?" in response to \
+"Build an HTML page", and the new message is just "An AI dashboard", treat this as one continued request \
+(goal combining both: an HTML page for an AI dashboard) rather than classifying "An AI dashboard" alone. \
+If there is no "Conversation so far:" block, classify the message by itself exactly as before.
 {
   "category": "conversation | question | browser_command | agent_command | task | settings | system_request | skill | mcp",
   "action": "short action keyword, see guidance below",
@@ -218,6 +228,59 @@ class ChatEngine:
                 row.last_error = None
 
     # ------------------------------------------------------------------ #
+    # Conversation context
+    # ------------------------------------------------------------------ #
+    # Short-term, per-session conversational context -- distinct from
+    # MemoryStore/Chroma (backend/memory/store.py), which only remembers
+    # *finished* workflow outcomes/preferences/tool calls across sessions.
+    # This is what lets a follow-up like "An AI dashboard" be understood as
+    # completing the previous "Build an HTML page" request instead of being
+    # classified/answered in isolation. Every LLM call this engine makes
+    # (intent classification, plus the free-form conversational reply)
+    # should be built from this context, not from the raw message alone.
+    CONTEXT_HISTORY_LIMIT = 12
+
+    async def _conversation_context(self, session_id: str, limit: int = CONTEXT_HISTORY_LIMIT) -> str:
+        """Recent prior turns for `session_id`, oldest first, formatted as
+        'role: content' lines. Excludes the message that triggered the
+        current turn (send_message already appended it before this is
+        called) -- callers append the new message explicitly via
+        _classifier_prompt/_history_prompt. Never raises: a history lookup
+        failure degrades to "no context" instead of breaking the turn."""
+        try:
+            history = await self.get_history(session_id, limit=limit + 1)
+        except Exception:
+            logger.exception("Failed to load conversation history for context")
+            return ""
+        if not history:
+            return ""
+        prior = history[:-1][-limit:]
+        lines: list[str] = []
+        for m in prior:
+            role = m.role.value if hasattr(m.role, "value") else m.role
+            content = (m.content or "").strip()
+            if not content:
+                continue
+            if len(content) > 800:
+                content = content[:800] + "…"
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _history_prompt(context: str, text: str) -> str:
+        """Plain transcript shape for free-text LLM calls (e.g. the
+        conversational reply) -- reads like a continuing chat log."""
+        return f"{context}\nuser: {text}" if context else text
+
+    @staticmethod
+    def _classifier_prompt(context: str, text: str) -> str:
+        """Labeled shape for the intent classifier: the model must classify
+        only the new message, but resolve it against what was just said."""
+        if not context:
+            return text
+        return f"Conversation so far:\n{context}\n\nNew message to classify: {text}"
+
+    # ------------------------------------------------------------------ #
     # Core turn
     # ------------------------------------------------------------------ #
     async def send_message(self, session_id: str, text: str, channel: str = "dashboard") -> dict:
@@ -241,8 +304,12 @@ class ChatEngine:
             await self._append(session.id, ChatRole.ASSISTANT, reply, category="skill", meta=meta)
             return {"session_id": session.id, "reply": reply, "category": "skill", "action": "teach_step", "meta": meta}
 
+        context = await self._conversation_context(session.id)
+        classifier_input = self._classifier_prompt(context, text)
         try:
-            intent = await self.llm.complete_json(CLASSIFIER_SYSTEM_PROMPT, text, task_type=TaskType.FAST_RESPONSE)
+            intent = await self.llm.complete_json(
+                CLASSIFIER_SYSTEM_PROMPT, classifier_input, task_type=TaskType.FAST_RESPONSE
+            )
         except Exception:
             logger.exception("Chat classifier failed, falling back to conversation")
             intent = {"category": "conversation"}
@@ -830,8 +897,7 @@ class ChatEngine:
             b = live_session.status()
             browser_line = f"active={b.get('active')} url={b.get('url') or '—'}"
 
-        history = await self.get_history(session.id, limit=13)
-        convo = "\n".join(f"{m.role.value}: {m.content}" for m in history[-13:-1])
+        context = await self._conversation_context(session.id)
 
         system_prompt = (
             "You are Nexus-Agent, chatting naturally with your operator. You control an autonomous "
@@ -843,7 +909,7 @@ class ChatEngine:
             f"Current browser: {browser_line}\n"
             f"Last known error this session: {session.last_error or 'none'}"
         )
-        user_prompt = f"{convo}\nuser: {text}" if convo else text
+        user_prompt = self._history_prompt(context, text)
         reply = await self.llm.complete_text(system_prompt, user_prompt, task_type=TaskType.GENERAL_CHAT)
         return reply.strip() or "..."
 
