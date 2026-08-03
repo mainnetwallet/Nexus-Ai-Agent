@@ -20,7 +20,7 @@ from backend.config.settings import settings, LLMProvider
 logger = logging.getLogger("nexus.llm")
 
 DEFAULT_MODELS = {
-    LLMProvider.ANTHROPIC: "claude-opus-4-8",
+    LLMProvider.ANTHROPIC: "claude-opus-5",
     LLMProvider.OPENAI: "gpt-5.6",
     # "-latest" aliases are managed by Google and hot-swapped to the newest
     # release of that tier automatically (per Gemini's model-naming docs),
@@ -115,6 +115,10 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[LLMProvider, _OpenAICompatConfig] = {
 # DEFAULT_MODELS above), so it's not repeated here.
 FALLBACK_MODELS: dict[LLMProvider, list[str]] = {
     LLMProvider.GEMINI: ["gemini-flash-lite-latest", "gemini-pro-latest"],
+    # claude-opus-5 is the default (see DEFAULT_MODELS above); opus-4-8 is
+    # kept as a same-provider fallback in case opus-5 is rate-limited,
+    # unavailable, or rejected by the account's model access list.
+    LLMProvider.ANTHROPIC: ["claude-opus-4-8"],
 }
 
 # Backoff (seconds) between retries of the *same* model before moving on
