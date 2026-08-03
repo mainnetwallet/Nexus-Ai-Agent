@@ -483,10 +483,11 @@ class LLMClient:
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 # Same client-fingerprint gate as _build_anthropic (see comment
-                # there) -- unverified exact string for the OpenAI/Codex side,
-                # but harmless against real api.openai.com if wrong. Update
-                # this if AgentRouter still 401s on the OpenAI-shape endpoint.
-                "User-Agent": "codex-cli/0.1.0 (external, cli)",
+                # there). These are the real headers the Codex CLI sends,
+                # pulled from openai/codex's default_client.rs: an
+                # "originator" header plus a versioned User-Agent string.
+                "originator": "codex_cli_rs",
+                "User-Agent": "codex_cli_rs/0.146.0 (Windows 11; x86_64) reqwest/0.12",
                 "x-app": "cli",
             }
 
