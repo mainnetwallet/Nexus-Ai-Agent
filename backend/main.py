@@ -122,6 +122,7 @@ async def lifespan(app: FastAPI):
     state.profile_registry = ProfileRegistry(DATA_DIR)
     state.profiles = ProfileManager(state.profile_registry)
     state.pending_profile = PendingProfileManager()
+    state.pending_profile = PendingProfileManager()
 
     state.queue = TaskQueueService(
         memory=state.memory,
