@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import html as _html
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
@@ -426,6 +427,26 @@ class NexusTelegramBot:
         text = " ".join(context.args) if context.args else "list my mcp connectors"
         await self._handle_chat_text(update, text)
 
+    async def _reply_with_optional_file(self, update: Update, result: dict) -> None:
+        """Sends ChatEngine's text reply, then -- if meta carries a
+        file_path (set by ChatEngine._handle_mcp_command after a
+        filesystem.write_file call) -- also sends that file to the chat as
+        a downloadable document, so "make me an HTML file" actually
+        delivers the file instead of just a text confirmation."""
+        await update.message.reply_text(result["reply"])
+        file_path = (result.get("meta") or {}).get("file_path")
+        if not file_path:
+            return
+        path = Path(file_path)
+        try:
+            if not path.is_file():
+                raise FileNotFoundError(str(path))
+            with path.open("rb") as fh:
+                await update.message.reply_document(document=fh, filename=path.name)
+        except Exception:
+            logger.exception("Failed to send generated file %s to Telegram", file_path)
+            await update.message.reply_text(f"⚠️ File was created at {_esc(file_path)} but couldn't be sent here.")
+
     async def _handle_chat_text(self, update: Update, text: str) -> None:
         chat_id = update.effective_chat.id if update.effective_chat else 0
         try:
@@ -434,7 +455,7 @@ class NexusTelegramBot:
             logger.exception("Chat engine failed to handle skill/teach command")
             await update.message.reply_text("Couldn't process that — try /help for direct commands.")
             return
-        await update.message.reply_text(result["reply"])
+        await self._reply_with_optional_file(update, result)
 
     # ---------------------------------------------------------------- #
     # Natural language routing
@@ -538,7 +559,7 @@ class NexusTelegramBot:
             await update.message.reply_text("Couldn't process that — try /help for direct commands.")
             return
 
-        await update.message.reply_text(result["reply"])
+        await self._reply_with_optional_file(update, result)
 
     # ---------------------------------------------------------------- #
     # Text-formatting helpers, shared by slash commands and NL routing
