@@ -28,7 +28,7 @@ const NAV = [
   { to: "/browser", label: "Live Browser", icon: MonitorPlay },
   { to: "/tasks", label: "Tasks", icon: ListChecks },
   { to: "/wallets", label: "Wallets", icon: Wallet },
-  { to: "/profiles", label: "Profiles", icon: UserCircle },
+  { to: "/profiles", label: "Chrome Profiles", icon: UserCircle },
   { to: "/memory", label: "Memory", icon: BrainCircuit },
   { to: "/reports", label: "Reports", icon: FileBarChart2 },
   { to: "/skills", label: "Skills", icon: Sparkles },
