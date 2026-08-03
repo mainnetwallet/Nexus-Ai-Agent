@@ -186,6 +186,48 @@ async def test_start_recovers_interrupted_tasks_on_boot():
 
 
 @pytest.mark.asyncio
+async def test_recover_clears_stale_current_task_pointer():
+    """
+    An unclean shutdown can leave AgentRuntimeState.current_task_id pointing
+    at a task from before the crash -- that field is only ever updated by
+    live task_start/task_finish events, so a fresh process still shows it as
+    the dashboard's "current task" forever, even after the underlying task
+    is requeued or deleted. Recovery should clear it since nothing is
+    genuinely in flight right after boot.
+    """
+    runtime = make_runtime()
+    task_id = await runtime.queue.enqueue("https://example.com", "goal", None, "")
+    async with get_session() as session:
+        task = await session.get(Task, task_id)
+        task.status = TaskStatus.RUNNING
+
+    await runtime._update(current_task_id=task_id, current_website="https://example.com", current_action="click")
+
+    await runtime._recover_interrupted_tasks()
+
+    status = await runtime.status()
+    assert status["current_task_id"] is None
+    assert status["current_website"] is None
+    assert status["current_action"] is None
+
+
+@pytest.mark.asyncio
+async def test_recover_keeps_current_task_pointer_if_actually_live():
+    """If self.queue.current_task_id still matches (a genuinely in-flight
+    task in this same process, e.g. a redundant Start click), recovery must
+    not blank out the dashboard's view of it."""
+    runtime = make_runtime()
+    task_id = await runtime.queue.enqueue("https://example.com", "goal", None, "")
+    runtime.queue.current_task_id = task_id
+    await runtime._update(current_task_id=task_id, current_website="https://example.com", current_action="click")
+
+    await runtime._recover_interrupted_tasks()
+
+    status = await runtime.status()
+    assert status["current_task_id"] == task_id
+
+
+@pytest.mark.asyncio
 async def test_activity_step_event_updates_current_action():
     runtime = make_runtime()
     await runtime.start()

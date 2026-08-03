@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.api.app_state import state
 from backend.api.auth import require_auth
-from backend.database.models import Task
+from backend.database.models import AgentRuntimeState, Task
 from backend.database.session import get_session, list_all
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"], dependencies=[Depends(require_auth)])
@@ -132,6 +132,24 @@ async def delete_task(task_id: str):
             return {"error": "not found"}
         await session.delete(task)
     state.queue._cancelled_ids.discard(task_id)
+
+    # AgentRuntime's "current task" dashboard view (AgentRuntimeState,
+    # backend/planner/agent_runtime.py) is only updated by live task_start/
+    # task_finish events -- it's a separate persisted field, not derived
+    # from the Task table. If it happens to still point at the task we just
+    # deleted (e.g. it never got a clean task_finish -- crashed, or was
+    # deleted straight out of an orphaned paused/queued state), clear it now
+    # so the dashboard doesn't keep showing a "current task" that no longer
+    # exists.
+    async with get_session() as session:
+        runtime_row = await session.get(AgentRuntimeState, "singleton")
+        if runtime_row is not None and runtime_row.current_task_id == task_id:
+            runtime_row.current_task_id = None
+            runtime_row.current_website = None
+            runtime_row.current_action = None
+            runtime_row.current_target = None
+            runtime_row.current_reasoning = None
+
     return {"id": task_id, "deleted": True}
 
 

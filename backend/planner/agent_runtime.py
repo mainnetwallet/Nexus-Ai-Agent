@@ -142,6 +142,29 @@ class AgentRuntime:
                     session.add(row)
                     await session.flush()
                 row.recoveries_performed = (row.recoveries_performed or 0) + recovered
+
+        # The "current task/action/reasoning" view above is only ever kept
+        # current by task_start/step/task_finish/task_crash events from a
+        # *live* worker (see _on_activity below) -- it's never cleared just
+        # because a stuck row got requeued. Left alone, a fresh process
+        # would start up still pointing at whatever task was "current" right
+        # before an unclean shutdown, showing a ghost "current task" on the
+        # dashboard even after that task is requeued, re-run, or deleted
+        # entirely. self.queue.current_task_id is the actual live indicator
+        # (set only while a task's _run_task coroutine is running in this
+        # process) -- if the persisted current_task_id doesn't match it,
+        # it's stale and safe to clear; the next real task_start repopulates it.
+        async with get_session() as session:
+            row = await session.get(AgentRuntimeState, _SINGLETON_ID)
+            stale = row is not None and row.current_task_id and row.current_task_id != self.queue.current_task_id
+        if stale:
+            await self._update(
+                current_task_id=None,
+                current_website=None,
+                current_action=None,
+                current_target=None,
+                current_reasoning=None,
+            )
         return recovered
 
     # ------------------------------------------------------------------ #

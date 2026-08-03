@@ -8,7 +8,7 @@ from sqlalchemy import delete
 
 from backend.api import app_state
 from backend.api.routes_tasks import router as tasks_router
-from backend.database.models import Report, Task
+from backend.database.models import AgentRuntimeState, Report, Task
 from backend.database.session import get_session, init_db
 from backend.planner.task_queue import TaskQueueService
 
@@ -33,6 +33,7 @@ async def client():
     async with get_session() as session:
         await session.execute(delete(Report))
         await session.execute(delete(Task))
+        await session.execute(delete(AgentRuntimeState))
     app_state.state.queue = None
 
 
@@ -130,6 +131,30 @@ async def test_delete_refuses_a_task_in_flight(client):
 
     r = await client.get(f"/api/tasks/{task_id}")
     assert r.json()["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_delete_clears_stale_agent_runtime_current_task_pointer(client):
+    """
+    AgentRuntimeState.current_task_id (the dashboard's "current task" view)
+    is only updated by live task_start/task_finish events -- if it's still
+    pointing at the task being deleted (e.g. it crashed before a clean
+    task_finish, or was deleted straight out of an orphaned state), delete
+    must clear it so the dashboard doesn't keep showing a ghost task.
+    """
+    r = await client.post("/api/tasks", json={"website": "https://example.com", "goal": "g", "notes": ""})
+    task_id = r.json()["id"]
+
+    async with get_session() as session:
+        session.add(AgentRuntimeState(id="singleton", current_task_id=task_id, current_website="https://example.com"))
+
+    r = await client.delete(f"/api/tasks/{task_id}")
+    assert r.json() == {"id": task_id, "deleted": True}
+
+    async with get_session() as session:
+        row = await session.get(AgentRuntimeState, "singleton")
+        assert row.current_task_id is None
+        assert row.current_website is None
 
 
 @pytest.mark.asyncio
