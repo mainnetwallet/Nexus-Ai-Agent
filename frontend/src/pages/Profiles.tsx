@@ -100,7 +100,7 @@ export function Profiles() {
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-signal-amber)]">
             Identity & Profile Manager
           </p>
-          <h1 className="mt-1 text-2xl font-semibold text-[var(--color-text)]">Profiles</h1>
+          <h1 className="mt-1 text-2xl font-semibold text-[var(--color-text)]">Chrome Profiles</h1>
           <p className="mt-1 max-w-xl text-sm text-[var(--color-text-muted)]">
             Each profile is one complete online identity — a wallet, a Chrome profile directory, and its
             Gmail/X/Discord accounts. Cookies, local storage, and extensions live on disk in the profile's own
