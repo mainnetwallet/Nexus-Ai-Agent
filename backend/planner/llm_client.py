@@ -1,0 +1,395 @@
+"""
+Thin, unified client over multiple LLM providers so the planner can switch
+models from Settings without touching business logic.
+"""
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+import mimetypes
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import quote
+
+import httpx
+
+from backend.config.settings import settings, LLMProvider
+
+logger = logging.getLogger("nexus.llm")
+
+DEFAULT_MODELS = {
+    LLMProvider.ANTHROPIC: "claude-sonnet-4-6",
+    LLMProvider.OPENAI: "gpt-4.1",
+    # "-latest" aliases are managed by Google and hot-swapped to the newest
+    # release of that tier automatically (per Gemini's model-naming docs),
+    # so this never needs to be manually bumped as new Gemini versions ship.
+    LLMProvider.GEMINI: "gemini-pro-latest",
+    LLMProvider.OPENROUTER: "anthropic/claude-sonnet-4.6",
+    # --- Free / developer tier ---
+    LLMProvider.GROQ: "llama-3.3-70b-versatile",
+    LLMProvider.CEREBRAS: "llama-3.3-70b",
+    LLMProvider.COHERE: "command-r-plus-08-2024",
+    LLMProvider.HUGGINGFACE: "meta-llama/Llama-3.3-70B-Instruct",
+    LLMProvider.NVIDIA_NIM: "meta/llama-3.1-70b-instruct",
+    LLMProvider.SAMBANOVA: "Meta-Llama-3.3-70B-Instruct",
+    LLMProvider.TOGETHER: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    LLMProvider.FIREWORKS: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+    LLMProvider.DEEPINFRA: "meta-llama/Llama-3.3-70B-Instruct",
+    LLMProvider.MISTRAL: "mistral-large-latest",
+    LLMProvider.REPLICATE: "meta/meta-llama-3-70b-instruct",
+    LLMProvider.AI21: "jamba-large",
+    # --- Commercial / premium ---
+    LLMProvider.XAI: "grok-4",
+    LLMProvider.MOONSHOT: "kimi-k2-0711-preview",
+    LLMProvider.QWEN: "qwen-max",
+    LLMProvider.ZHIPU: "glm-4.6",
+}
+
+# All current default models above are already vision-capable, so the same
+# model id is reused for image calls unless vision_model_override is set.
+DEFAULT_VISION_MODELS = dict(DEFAULT_MODELS)
+
+
+class _OpenAICompatConfig:
+    """
+    Static wiring for a provider that speaks the OpenAI chat/completions
+    request/response shape (the large majority of providers in the AI
+    Model Manager's roster expose a compatibility endpoint of this form).
+    Providers with a genuinely different wire format (Anthropic, Gemini)
+    keep their own dedicated builder instead of going through this table.
+    """
+
+    __slots__ = ("base_url", "api_key_attr", "extra_headers")
+
+    def __init__(self, base_url: str, api_key_attr: str, extra_headers: Optional[dict[str, str]] = None) -> None:
+        self.base_url = base_url
+        self.api_key_attr = api_key_attr
+        self.extra_headers = extra_headers or {}
+
+
+# Provider -> (chat/completions URL, settings attribute holding the API key).
+# Adding a new OpenAI-compatible provider is a two-line change: one entry
+# here, one entry in DEFAULT_MODELS above (plus the api key field on
+# Settings and a LLMProvider enum member).
+OPENAI_COMPATIBLE_PROVIDERS: dict[LLMProvider, _OpenAICompatConfig] = {
+    LLMProvider.GROQ: _OpenAICompatConfig("https://api.groq.com/openai/v1/chat/completions", "groq_api_key"),
+    LLMProvider.CEREBRAS: _OpenAICompatConfig("https://api.cerebras.ai/v1/chat/completions", "cerebras_api_key"),
+    LLMProvider.COHERE: _OpenAICompatConfig("https://api.cohere.ai/compatibility/v1/chat/completions", "cohere_api_key"),
+    LLMProvider.HUGGINGFACE: _OpenAICompatConfig("https://router.huggingface.co/v1/chat/completions", "huggingface_api_key"),
+    LLMProvider.NVIDIA_NIM: _OpenAICompatConfig("https://integrate.api.nvidia.com/v1/chat/completions", "nvidia_nim_api_key"),
+    LLMProvider.SAMBANOVA: _OpenAICompatConfig("https://api.sambanova.ai/v1/chat/completions", "sambanova_api_key"),
+    LLMProvider.TOGETHER: _OpenAICompatConfig("https://api.together.xyz/v1/chat/completions", "together_api_key"),
+    LLMProvider.FIREWORKS: _OpenAICompatConfig("https://api.fireworks.ai/inference/v1/chat/completions", "fireworks_api_key"),
+    LLMProvider.DEEPINFRA: _OpenAICompatConfig("https://api.deepinfra.com/v1/openai/chat/completions", "deepinfra_api_key"),
+    LLMProvider.MISTRAL: _OpenAICompatConfig("https://api.mistral.ai/v1/chat/completions", "mistral_api_key"),
+    LLMProvider.AI21: _OpenAICompatConfig("https://api.ai21.com/studio/v1/chat/completions", "ai21_api_key"),
+    # Replicate does not expose a native chat/completions endpoint for every
+    # model; this points at its OpenAI-compatible proxy for the subset of
+    # models that support it. Models outside that subset will 404 -- pick a
+    # Replicate model known to support the compat endpoint, or use a
+    # different provider for that task.
+    LLMProvider.REPLICATE: _OpenAICompatConfig("https://api.replicate.com/v1/chat/completions", "replicate_api_key"),
+    LLMProvider.XAI: _OpenAICompatConfig("https://api.x.ai/v1/chat/completions", "xai_api_key"),
+    LLMProvider.MOONSHOT: _OpenAICompatConfig("https://api.moonshot.ai/v1/chat/completions", "moonshot_api_key"),
+    LLMProvider.QWEN: _OpenAICompatConfig("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen_api_key"),
+    LLMProvider.ZHIPU: _OpenAICompatConfig("https://open.bigmodel.cn/api/paas/v4/chat/completions", "zhipu_api_key"),
+}
+
+# Backup models to try (in order) when the primary model is rate-limited
+# (HTTP 429). These kick in purely to keep the agent responsive when a
+# provider's quota is temporarily exhausted -- they don't affect which
+# model is used when everything is healthy.
+#
+# Gemini's fallbacks also use Google's auto-updating "-latest" aliases
+# (flash, then flash-lite) rather than pinned model names, so the whole
+# chain stays current as Google ships new Gemini releases without any
+# code changes here.
+FALLBACK_MODELS: dict[LLMProvider, list[str]] = {
+    LLMProvider.ANTHROPIC: ["claude-sonnet-4-6"],
+    LLMProvider.OPENAI: ["gpt-4.1-mini"],
+    LLMProvider.GEMINI: ["gemini-flash-latest", "gemini-flash-lite-latest"],
+    LLMProvider.OPENROUTER: ["anthropic/claude-sonnet-4.6"],
+}
+
+# Backoff (seconds) between retries of the *same* model before moving on
+# to the next fallback model.
+RATE_LIMIT_RETRY_DELAYS = [1, 2]
+
+
+def _image_to_data_url(image_path: str) -> tuple[str, str]:
+    """Returns (base64_data, mime_type) for a local image file."""
+    mime_type = mimetypes.guess_type(image_path)[0] or "image/png"
+    data = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+    return data, mime_type
+
+
+class LLMClient:
+    """
+    Unified client. Each provider is implemented as one "build request"
+    method (returns url/headers/json body, aware of whether an image is
+    attached) plus one "extract text" method for its response shape. Both
+    complete_json() and complete_json_with_image() share the same dispatch
+    -> post -> extract -> parse-JSON pipeline, so adding or fixing a
+    provider only touches its one build/extract pair instead of four
+    near-duplicate call methods.
+    """
+
+    def __init__(self, provider: LLMProvider | None = None, model: str | None = None) -> None:
+        self.provider = provider or settings.llm_provider
+        self.model = model or settings.llm_model_override or DEFAULT_MODELS[self.provider]
+        self.vision_model = settings.vision_model_override or DEFAULT_VISION_MODELS[self.provider]
+
+    # ------------------------------------------------------------------ #
+    # Public API (unchanged signatures -- callers are unaffected)
+    # ------------------------------------------------------------------ #
+    async def complete_json(self, system_prompt: str, user_prompt: str, max_tokens: int = 1500) -> dict[str, Any]:
+        """
+        Sends a prompt that requests a strict JSON response and parses it.
+        Raises ValueError if the provider returns something unparsable.
+        """
+        raw = await self._complete(system_prompt, user_prompt, max_tokens, image_path=None, model=self.model)
+        return self._parse_json(raw, context="Planner")
+
+    async def complete_text(self, system_prompt: str, user_prompt: str, max_tokens: int = 800) -> str:
+        """
+        Plain conversational completion -- returns raw text, no JSON parsing.
+        Used for general chat (answering questions, small talk) as opposed
+        to complete_json()'s structured planner/intent calls.
+        """
+        return await self._complete(system_prompt, user_prompt, max_tokens, image_path=None, model=self.model)
+
+    async def complete_json_with_image(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        image_path: str,
+        max_tokens: int = 1200,
+    ) -> dict[str, Any]:
+        raw = await self._complete(system_prompt, user_prompt, max_tokens, image_path=image_path, model=self.vision_model)
+        return self._parse_json(raw, context="Vision")
+
+    # ------------------------------------------------------------------ #
+    # Shared pipeline
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_json(raw: str, context: str) -> dict[str, Any]:
+        cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            logger.error("%s LLM returned non-JSON: %s", context, raw[:500])
+            raise ValueError(f"{context} LLM did not return valid JSON: {exc}") from exc
+
+    async def _complete(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        image_path: Optional[str],
+        model: str,
+    ) -> str:
+        """
+        Tries `model` first, then -- only on HTTP 429 (rate limit) -- falls
+        back through FALLBACK_MODELS[self.provider] in order, with a short
+        backoff between attempts of the same model. Any non-429 error is
+        raised immediately without falling back, since a fallback model
+        can't fix a bad request or an auth failure.
+        """
+        image = _image_to_data_url(image_path) if image_path else None
+
+        # De-duplicate while preserving order: primary model first, then
+        # its fallbacks (skipping the primary if it's also listed there).
+        candidates = [model] + [m for m in FALLBACK_MODELS.get(self.provider, []) if m != model]
+
+        last_rate_limit_error: Optional[httpx.HTTPStatusError] = None
+
+        for candidate_index, candidate_model in enumerate(candidates):
+            for attempt, delay in enumerate([0] + RATE_LIMIT_RETRY_DELAYS):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    text = await self._dispatch(candidate_model, system_prompt, user_prompt, max_tokens, image)
+                    if candidate_index > 0 or attempt > 0:
+                        logger.info(
+                            "LLM request served by model=%s (provider=%s) after rate-limit fallback",
+                            candidate_model,
+                            self.provider,
+                        )
+                    return text
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code != 429:
+                        raise
+                    last_rate_limit_error = exc
+                    logger.warning(
+                        "Rate limited (429) on model=%s (provider=%s), attempt=%d",
+                        candidate_model,
+                        self.provider,
+                        attempt + 1,
+                    )
+
+        logger.error(
+            "All models exhausted due to rate limiting for provider=%s: tried %s",
+            self.provider,
+            candidates,
+        )
+        assert last_rate_limit_error is not None
+        raise last_rate_limit_error
+
+    async def _dispatch(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        image: Optional[tuple[str, str]],
+    ) -> str:
+        """Builds and sends the request for a single model attempt (no retry logic here)."""
+        if self.provider == LLMProvider.ANTHROPIC:
+            url, headers, body = self._build_anthropic(model, system_prompt, user_prompt, max_tokens, image)
+            payload = await self._post(url, headers, body)
+            return "".join(b.get("text", "") for b in payload.get("content", []) if b.get("type") == "text")
+
+        if self.provider in (LLMProvider.OPENAI, LLMProvider.OPENROUTER):
+            url, headers, body = self._build_openai_style(model, system_prompt, user_prompt, max_tokens, image)
+            payload = await self._post(url, headers, body)
+            return payload["choices"][0]["message"]["content"]
+
+        if self.provider == LLMProvider.GEMINI:
+            url, headers, body = self._build_gemini(model, system_prompt, user_prompt, max_tokens, image)
+            payload = await self._post(url, headers, body)
+            return payload["candidates"][0]["content"]["parts"][0]["text"]
+
+        if self.provider in OPENAI_COMPATIBLE_PROVIDERS:
+            url, headers, body = self._build_openai_compatible(model, system_prompt, user_prompt, max_tokens, image)
+            payload = await self._post(url, headers, body)
+            return payload["choices"][0]["message"]["content"]
+
+        raise ValueError(f"Unsupported provider {self.provider}")
+
+    @staticmethod
+    async def _post(url: str, headers: dict[str, str], json_body: dict[str, Any]) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, headers=headers, json=json_body)
+            resp.raise_for_status()
+            return resp.json()
+
+    # ------------------------------------------------------------------ #
+    # Per-provider request builders (text and vision share these -- the
+    # only difference is whether `image` is None)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _build_anthropic(
+        model: str, system_prompt: str, user_prompt: str, max_tokens: int, image: Optional[tuple[str, str]]
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
+        if image:
+            data, mime_type = image
+            content = [
+                {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": data}},
+                {"type": "text", "text": user_prompt},
+            ]
+        else:
+            content = user_prompt
+        return (
+            "https://api.anthropic.com/v1/messages",
+            {
+                "x-api-key": settings.anthropic_api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            {
+                "model": model,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": content}],
+            },
+        )
+
+    def _build_openai_style(
+        self, model: str, system_prompt: str, user_prompt: str, max_tokens: int, image: Optional[tuple[str, str]]
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """Shared by OpenAI and OpenRouter -- both use the OpenAI chat/completions shape."""
+        if image:
+            data, mime_type = image
+            user_content: Any = [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{data}"}},
+            ]
+        else:
+            user_content = user_prompt
+
+        if self.provider == LLMProvider.OPENROUTER:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            api_key = settings.openrouter_api_key
+        else:
+            url = "https://api.openai.com/v1/chat/completions"
+            api_key = settings.openai_api_key
+
+        return (
+            url,
+            {"Authorization": f"Bearer {api_key}"},
+            {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            },
+        )
+
+    def _build_openai_compatible(
+        self, model: str, system_prompt: str, user_prompt: str, max_tokens: int, image: Optional[tuple[str, str]]
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
+        """
+        Shared by every provider in OPENAI_COMPATIBLE_PROVIDERS (Groq,
+        Cerebras, Cohere, Hugging Face, NVIDIA NIM, SambaNova, Together,
+        Fireworks, DeepInfra, Mistral, Replicate, AI21, xAI, Moonshot,
+        Qwen, Zhipu) -- all speak the same OpenAI chat/completions
+        request/response shape, just against a different base URL and key.
+        """
+        config = OPENAI_COMPATIBLE_PROVIDERS[self.provider]
+
+        if image:
+            data, mime_type = image
+            user_content: Any = [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{data}"}},
+            ]
+        else:
+            user_content = user_prompt
+
+        api_key = getattr(settings, config.api_key_attr)
+        headers = {"Authorization": f"Bearer {api_key}", **config.extra_headers}
+
+        return (
+            config.base_url,
+            headers,
+            {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            },
+        )
+
+    @staticmethod
+    def _build_gemini(
+        model: str, system_prompt: str, user_prompt: str, max_tokens: int, image: Optional[tuple[str, str]]
+    ) -> tuple[str, dict[str, str], dict[str, Any]]:
+        parts: list[dict[str, Any]] = [{"text": user_prompt}]
+        if image:
+            data, mime_type = image
+            parts.append({"inline_data": {"mime_type": mime_type, "data": data}})
+        return (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={quote(settings.gemini_api_key)}",
+            {},
+            {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"parts": parts}],
+                "generationConfig": {"maxOutputTokens": max_tokens},
+            },
+        )

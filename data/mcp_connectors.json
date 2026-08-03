@@ -1,0 +1,32 @@
+{
+  "filesystem": {
+    "enabled": true,
+    "config": {
+      "roots": [
+        "/home/claude/work/data"
+      ]
+    }
+  },
+  "terminal": {
+    "enabled": false,
+    "config": {
+      "allowed_commands": null,
+      "timeout": 30,
+      "cwd": ""
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "config": {
+      "timeout": 20
+    }
+  },
+  "github": {
+    "enabled": true,
+    "config": {
+      "token": "",
+      "default_owner": "",
+      "default_repo": ""
+    }
+  }
+}
