@@ -9,6 +9,7 @@ dashboard, Telegram (/diagnostics) or CI can consume.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import platform
 import sys
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from backend.config.settings import LLMProvider, settings
+from backend.planner.model_manager import model_manager
 
 
 @dataclass
@@ -70,7 +72,7 @@ class DiagnosticsService:
         report = DiagnosticReport()
         report.checks.append(self._check_browser())
         report.checks.append(self._check_playwright())
-        report.checks.extend(self._check_ai_apis())
+        report.checks.extend(await self._check_ai_apis())
         report.checks.append(await self._check_database())
         report.checks.append(self._check_plugins())
         report.checks.append(self._check_memory())
@@ -122,31 +124,49 @@ class DiagnosticsService:
         LLMProvider.AI21: "ai21_api_key",
     }
 
-    def _check_ai_apis(self) -> list[DiagnosticCheck]:
-        """One check per provider that actually has a key configured in
-        .env -- providers with no key simply don't show up here at all,
-        so the Diagnostics panel stays fully dynamic as keys are added or
-        removed, instead of only ever reporting on the single default
-        LLM_PROVIDER."""
+    async def _check_ai_apis(self) -> list[DiagnosticCheck]:
+        """One check per provider that has a key configured -- and unlike a
+        plain 'is a key present' check, this actually calls the provider
+        (same live request model_manager.test_connection uses for the
+        Settings 'Test Provider Connection' button) so a bad/expired key,
+        wrong base URL, or account/billing problem shows up as a real
+        failure here instead of a false 'ok'. Providers with no key
+        configured don't show up at all."""
         checks: list[DiagnosticCheck] = []
         default_provider = settings.llm_provider.value
-        for provider, attr in self._PROVIDER_KEY_ATTR.items():
-            key = getattr(settings, attr, "")
-            if not key:
-                continue
-            is_default = provider.value == default_provider
-            label = f"ai_api:{provider.value}"
-            detail = f"key configured{' (default)' if is_default else ''}"
-            checks.append(DiagnosticCheck(label, True, detail))
+        configured = [
+            provider
+            for provider, attr in self._PROVIDER_KEY_ATTR.items()
+            if getattr(settings, attr, "")
+        ]
 
-        if not checks:
-            checks.append(
+        if not configured:
+            return [
                 DiagnosticCheck(
                     "ai_api",
                     False,
                     f"no API key set for any provider (default provider={default_provider})",
                 )
-            )
+            ]
+
+        results = await asyncio.gather(
+            *(model_manager.test_connection(provider) for provider in configured),
+            return_exceptions=True,
+        )
+        for provider, result in zip(configured, results):
+            is_default = provider.value == default_provider
+            label = f"ai_api:{provider.value}"
+            suffix = " (default)" if is_default else ""
+            if isinstance(result, Exception):
+                checks.append(DiagnosticCheck(label, False, f"connection test crashed: {result}{suffix}"))
+                continue
+            if result.get("ok"):
+                latency = result.get("latency_ms")
+                detail = f"reachable{suffix}" + (f" ({latency} ms)" if latency is not None else "")
+                checks.append(DiagnosticCheck(label, True, detail))
+            else:
+                error = str(result.get("error", "unknown error"))[:200]
+                checks.append(DiagnosticCheck(label, False, f"{error}{suffix}"))
         return checks
 
     async def _check_database(self) -> DiagnosticCheck:
