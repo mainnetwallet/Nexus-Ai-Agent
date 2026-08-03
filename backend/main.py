@@ -38,6 +38,7 @@ from backend.config.settings import DATA_DIR, LOG_DIR, settings
 from backend.database.session import init_db
 from backend.identity.manager import ProfileManager
 from backend.identity.registry import ProfileRegistry
+from backend.identity.pending_profile import PendingProfileManager
 from backend.mcp.manager import MCPManager
 from backend.memory.store import MemoryStore
 from backend.planner.agent_runtime import AgentRuntime
