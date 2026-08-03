@@ -19,6 +19,7 @@ from backend.browser.engine import BrowserEngine
 from backend.memory.store import MemoryStore
 from backend.planner.decision_engine import DecisionEngine
 from backend.planner.llm_client import LLMClient
+from backend.planner.model_manager import model_manager
 from backend.vision.vision_engine import VisionAnalyzer
 from backend.wallet.manager import WalletManager
 
@@ -86,7 +87,7 @@ class AgentLoop:
         self.engine = engine
         self.memory = memory
         self.wallet = wallet
-        self.llm = llm or LLMClient()
+        self.llm = llm or model_manager
         self.max_steps = max_steps
         self.on_step = on_step  # optional async callback(StepResult) for live streaming (e.g. Telegram)
         self.vision = vision or VisionAnalyzer(llm=self.llm)

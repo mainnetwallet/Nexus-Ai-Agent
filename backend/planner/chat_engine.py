@@ -45,6 +45,7 @@ from sqlalchemy import select
 from backend.database.models import ChatMessage, ChatRole, ChatSession, Report, SkillSource, Task, TaskStatus
 from backend.database.session import get_session
 from backend.planner.llm_client import LLMClient
+from backend.planner.model_manager import model_manager as _default_model_manager
 
 logger = logging.getLogger("nexus.chat")
 
@@ -159,7 +160,7 @@ class ChatEngine:
     def __init__(self, queue: Any, app_state: Optional[Any] = None, llm: Optional[LLMClient] = None) -> None:
         self.queue = queue  # TaskQueueService
         self.app_state = app_state  # backend.api.app_state.AppState, optional
-        self.llm = llm or LLMClient()
+        self.llm = llm or _default_model_manager
 
     # ------------------------------------------------------------------ #
     # Session management

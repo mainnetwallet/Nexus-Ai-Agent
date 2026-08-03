@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from backend.planner.llm_client import LLMClient
+from backend.planner.model_manager import model_manager
 
 logger = logging.getLogger("nexus.skills.teach")
 
@@ -84,7 +85,7 @@ class TeachDraft:
 
 class TeachModeManager:
     def __init__(self, llm: Optional[LLMClient] = None) -> None:
-        self.llm = llm or LLMClient()
+        self.llm = llm or model_manager
         self._drafts: dict[str, TeachDraft] = {}
 
     # ------------------------------------------------------------------ #

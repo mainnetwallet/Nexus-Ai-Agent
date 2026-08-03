@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from backend.config.settings import settings
 from backend.planner.llm_client import LLMClient
+from backend.planner.model_manager import model_manager
 from backend.vision.ocr import OCREngine, OCRResult
 
 logger = logging.getLogger("nexus.vision")
@@ -63,7 +64,7 @@ class VisionAnalyzer:
     """
 
     def __init__(self, llm: Optional[LLMClient] = None, ocr: Optional[OCREngine] = None) -> None:
-        self.llm = llm or LLMClient()
+        self.llm = llm or model_manager
         self.ocr = ocr or OCREngine()
 
     def should_trigger(self, interactive_elements: list[dict[str, Any]]) -> bool:

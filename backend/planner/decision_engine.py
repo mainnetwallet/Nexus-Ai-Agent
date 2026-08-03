@@ -34,6 +34,7 @@ from typing import Any, Optional
 
 from backend.browser.engine import PageSnapshot
 from backend.planner.llm_client import LLMClient
+from backend.planner.model_manager import model_manager
 from backend.vision.vision_engine import VisionAnalyzer, VisionPerception
 
 logger = logging.getLogger("nexus.decision_engine")
@@ -101,7 +102,7 @@ class DecisionEngine:
     """
 
     def __init__(self, llm: Optional[LLMClient] = None, vision: Optional[VisionAnalyzer] = None) -> None:
-        self.llm = llm or LLMClient()
+        self.llm = llm or model_manager
         self.vision = vision or VisionAnalyzer(llm=self.llm)
 
     # ------------------------------------------------------------------ #

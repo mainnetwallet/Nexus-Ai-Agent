@@ -19,6 +19,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from backend.config.settings import settings
 from backend.planner.chat_engine import ChatEngine
 from backend.planner.llm_client import LLMClient
+from backend.planner.model_manager import model_manager
 from backend.planner.task_queue import TaskQueueService
 
 logger = logging.getLogger("nexus.telegram")
@@ -97,7 +98,7 @@ class NexusTelegramBot:
         # pointing the user at the REST API. Entirely optional so existing
         # callers that only pass `queue` keep working unchanged.
         self.app_state = app_state
-        self.llm = LLMClient()
+        self.llm = model_manager
         self.app: Optional[Application] = None
         # Conversational fallback ("chat"/"unknown" intents, i.e. anything
         # that isn't a fast structured command above) is delegated to the
