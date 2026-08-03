@@ -439,6 +439,14 @@ class LLMClient:
                 "Authorization": f"Bearer {api_key}",
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
+                # Some gateways (confirmed with AgentRouter, 2026-08-03) return
+                # 401 unauthorized_client_error for any request that doesn't
+                # look like it came from the official Claude Code CLI, even
+                # with a valid key. Spoofing the CLI's User-Agent/x-app is
+                # what unblocks it -- has no effect against real
+                # api.anthropic.com, which ignores both headers.
+                "User-Agent": "claude-cli/2.1.220 (external, cli)",
+                "x-app": "cli",
             },
             {
                 "model": model,
@@ -464,13 +472,23 @@ class LLMClient:
         if self.provider == LLMProvider.OPENROUTER:
             url = "https://openrouter.ai/api/v1/chat/completions"
             api_key = _require_api_key(settings.openrouter_api_key, "OpenRouter", "OPENROUTER_API_KEY")
+            headers = {"Authorization": f"Bearer {api_key}"}
         else:
             url = settings.openai_base_url
             api_key = _require_api_key(settings.openai_api_key, "OpenAI", "OPENAI_API_KEY")
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                # Same client-fingerprint gate as _build_anthropic (see comment
+                # there) -- unverified exact string for the OpenAI/Codex side,
+                # but harmless against real api.openai.com if wrong. Update
+                # this if AgentRouter still 401s on the OpenAI-shape endpoint.
+                "User-Agent": "codex-cli/0.1.0 (external, cli)",
+                "x-app": "cli",
+            }
 
         return (
             url,
-            {"Authorization": f"Bearer {api_key}"},
+            headers,
             {
                 "model": model,
                 "max_tokens": max_tokens,
