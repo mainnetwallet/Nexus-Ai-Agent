@@ -25,7 +25,9 @@ DEFAULT_MODELS = {
     # "-latest" aliases are managed by Google and hot-swapped to the newest
     # release of that tier automatically (per Gemini's model-naming docs),
     # so this never needs to be manually bumped as new Gemini versions ship.
-    LLMProvider.GEMINI: "gemini-pro-latest",
+    # flash is the default (fast, generous free-tier quota); pro is kept as
+    # a fallback for when flash's response quality isn't enough.
+    LLMProvider.GEMINI: "gemini-flash-latest",
     LLMProvider.OPENROUTER: "anthropic/claude-sonnet-4.6",
     # --- Free / developer tier ---
     LLMProvider.GROQ: "llama-3.3-70b-versatile",
@@ -103,19 +105,21 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[LLMProvider, _OpenAICompatConfig] = {
 # model is used when everything is healthy.
 #
 # Gemini's fallbacks also use Google's auto-updating "-latest" aliases
-# (flash, then flash-lite) rather than pinned model names, so the whole
+# (flash-lite, then pro) rather than pinned model names, so the whole
 # chain stays current as Google ships new Gemini releases without any
-# code changes here.
+# code changes here. flash itself is the default model (see
+# DEFAULT_MODELS above), so it's not repeated here.
 FALLBACK_MODELS: dict[LLMProvider, list[str]] = {
     LLMProvider.ANTHROPIC: ["claude-sonnet-4-6"],
     LLMProvider.OPENAI: ["gpt-4.1-mini"],
-    LLMProvider.GEMINI: ["gemini-flash-latest", "gemini-flash-lite-latest"],
+    LLMProvider.GEMINI: ["gemini-flash-lite-latest", "gemini-pro-latest"],
     LLMProvider.OPENROUTER: ["anthropic/claude-sonnet-4.6"],
 }
 
 # Backoff (seconds) between retries of the *same* model before moving on
-# to the next fallback model.
-RATE_LIMIT_RETRY_DELAYS = [1, 2]
+# to the next fallback model. Empty = exactly one attempt per model, then
+# straight on to the next fallback on a 429 (no same-model retry delay).
+RATE_LIMIT_RETRY_DELAYS: list[int] = []
 
 
 def _image_to_data_url(image_path: str) -> tuple[str, str]:
