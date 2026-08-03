@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from backend.config.settings import settings
+from backend.config.settings import LLMProvider, settings
 
 
 @dataclass
@@ -70,7 +70,7 @@ class DiagnosticsService:
         report = DiagnosticReport()
         report.checks.append(self._check_browser())
         report.checks.append(self._check_playwright())
-        report.checks.append(await self._check_ai_api())
+        report.checks.extend(self._check_ai_apis())
         report.checks.append(await self._check_database())
         report.checks.append(self._check_plugins())
         report.checks.append(self._check_memory())
@@ -96,17 +96,58 @@ class DiagnosticsService:
         except Exception as exc:  # noqa: BLE001
             return DiagnosticCheck("playwright", False, f"import failed: {exc}")
 
-    async def _check_ai_api(self) -> DiagnosticCheck:
-        provider = settings.llm_provider.value
-        key_map = {
-            "anthropic": settings.anthropic_api_key,
-            "openai": settings.openai_api_key,
-            "gemini": settings.gemini_api_key,
-            "openrouter": settings.openrouter_api_key,
-        }
-        if not key_map.get(provider):
-            return DiagnosticCheck("ai_api", False, f"no API key set for provider={provider}")
-        return DiagnosticCheck("ai_api", True, f"provider={provider} model configured")
+    # Every provider the AI Model Manager supports. Kept here (rather than
+    # imported from backend.planner.model_manager) to avoid pulling in the
+    # heavier planner module just for a settings lookup.
+    _PROVIDER_KEY_ATTR: dict[LLMProvider, str] = {
+        LLMProvider.ANTHROPIC: "anthropic_api_key",
+        LLMProvider.OPENAI: "openai_api_key",
+        LLMProvider.GEMINI: "gemini_api_key",
+        LLMProvider.OPENROUTER: "openrouter_api_key",
+        LLMProvider.XAI: "xai_api_key",
+        LLMProvider.MOONSHOT: "moonshot_api_key",
+        LLMProvider.QWEN: "qwen_api_key",
+        LLMProvider.ZHIPU: "zhipu_api_key",
+        LLMProvider.GROQ: "groq_api_key",
+        LLMProvider.CEREBRAS: "cerebras_api_key",
+        LLMProvider.COHERE: "cohere_api_key",
+        LLMProvider.HUGGINGFACE: "huggingface_api_key",
+        LLMProvider.NVIDIA_NIM: "nvidia_nim_api_key",
+        LLMProvider.SAMBANOVA: "sambanova_api_key",
+        LLMProvider.TOGETHER: "together_api_key",
+        LLMProvider.FIREWORKS: "fireworks_api_key",
+        LLMProvider.DEEPINFRA: "deepinfra_api_key",
+        LLMProvider.MISTRAL: "mistral_api_key",
+        LLMProvider.REPLICATE: "replicate_api_key",
+        LLMProvider.AI21: "ai21_api_key",
+    }
+
+    def _check_ai_apis(self) -> list[DiagnosticCheck]:
+        """One check per provider that actually has a key configured in
+        .env -- providers with no key simply don't show up here at all,
+        so the Diagnostics panel stays fully dynamic as keys are added or
+        removed, instead of only ever reporting on the single default
+        LLM_PROVIDER."""
+        checks: list[DiagnosticCheck] = []
+        default_provider = settings.llm_provider.value
+        for provider, attr in self._PROVIDER_KEY_ATTR.items():
+            key = getattr(settings, attr, "")
+            if not key:
+                continue
+            is_default = provider.value == default_provider
+            label = f"ai_api:{provider.value}"
+            detail = f"key configured{' (default)' if is_default else ''}"
+            checks.append(DiagnosticCheck(label, True, detail))
+
+        if not checks:
+            checks.append(
+                DiagnosticCheck(
+                    "ai_api",
+                    False,
+                    f"no API key set for any provider (default provider={default_provider})",
+                )
+            )
+        return checks
 
     async def _check_database(self) -> DiagnosticCheck:
         try:
