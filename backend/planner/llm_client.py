@@ -228,6 +228,15 @@ class LLMClient:
             for attempt, delay in enumerate([0] + RATE_LIMIT_RETRY_DELAYS):
                 if delay:
                     await asyncio.sleep(delay)
+                if rate_limit_hits:
+                    logger.info(
+                        "Trying model=%s (provider=%s) after %d earlier 429(s) on model=%s "
+                        "-- this attempt can take up to the request timeout if it also hangs/stalls",
+                        candidate_model,
+                        self.provider,
+                        rate_limit_hits,
+                        model,
+                    )
                 try:
                     text = await self._dispatch(candidate_model, system_prompt, user_prompt, max_tokens, image)
                     if rate_limit_hits:
