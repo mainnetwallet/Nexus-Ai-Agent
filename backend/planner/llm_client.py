@@ -431,6 +431,15 @@ class LLMClient:
             {
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "contents": [{"parts": parts}],
-                "generationConfig": {"maxOutputTokens": max_tokens},
+                # thinkingBudget=0 turns off extended "thinking" on
+                # thinking-capable Gemini models (2.5+/3.x). Without this,
+                # a small maxOutputTokens can get entirely consumed by
+                # hidden thinking tokens, leaving finishReason=MAX_TOKENS
+                # with no actual output parts. Non-thinking models just
+                # ignore this field.
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "thinkingConfig": {"thinkingBudget": 0},
+                },
             },
         )
