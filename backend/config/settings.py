@@ -121,7 +121,7 @@ class Settings(BaseSettings):
 
     # --- Browser ---
     browser_channel: BrowserChannel = Field(default=BrowserChannel.CHROME)
-    browser_headless: bool = Field(default=False)
+    browser_headless: bool = Field(default=True)
     browser_user_data_dir: Optional[str] = Field(default=None, description="Path to persistent Chrome profile")
     browser_slow_mo_ms: int = Field(default=0)
     browser_default_timeout_ms: int = Field(default=30_000)
