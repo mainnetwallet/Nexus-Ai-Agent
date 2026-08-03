@@ -786,7 +786,7 @@ class ChatEngine:
         # as a document when meta["file_path"] is present.
         if (
             result.connector == "filesystem"
-            and result.tool == "write_file"
+            and result.tool in ("write_file", "edit_file")
             and isinstance(result.output, dict)
             and result.output.get("path")
         ):
