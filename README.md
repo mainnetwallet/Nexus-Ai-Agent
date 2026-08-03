@@ -350,6 +350,16 @@ npm run dev      # http://localhost:5173, backend must already be running
 npm run build    # production build -> frontend/dist
 ```
 
+> Windows-এ `frontend/.env` খুলতে:
+> ```powershell
+> cd frontend
+> notepad .env
+> ```
+> ⚠️ Dashboard-এ **"Invalid or missing token"** error দেখালে — `frontend/.env`-এর
+> `VITE_API_TOKEN` আর root `.env`-এর `API_AUTH_TOKEN` মিলছে না। দুই জায়গায়
+> **একই** token বসিয়ে দুটো process-ই restart করুন।
+```
+
 Pages:
 - **Home** — live counts (running/queued/succeeded/failed), recent tasks, recent
   reports, and current browser-session status at a glance.
