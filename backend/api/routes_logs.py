@@ -1,8 +1,9 @@
 """
 Log access API.
 
-Read-only tailing of the backend's rotating log file (backend/config/settings.py
--> LOG_DIR / "nexus.log"). No write/delete surface here on purpose.
+Tailing of the backend's rotating log file (backend/config/settings.py
+-> LOG_DIR / "nexus.log"), plus a `DELETE /api/logs` to clear it from the
+frontend's Logs page.
 
 Also exposes a live WebSocket stream (`WS /api/logs/ws/live`) that pushes
 each formatted log line to connected clients as it's emitted, fed by a
@@ -39,6 +40,15 @@ async def tail_logs(lines: int = 200):
 
     tail = [line.rstrip("\n") for line in content[-lines:]]
     return {"lines": tail, "file": str(_LOG_FILE), "total_lines": len(content)}
+
+
+@router.delete("")
+async def clear_logs():
+    """Truncate the backend log file (does not touch rotated .log.N backups)."""
+    if _LOG_FILE.exists():
+        with _LOG_FILE.open("w"):
+            pass
+    return {"cleared": True, "file": str(_LOG_FILE)}
 
 
 async def broadcast_log_line(line: str) -> None:

@@ -858,6 +858,7 @@ export const api = {
 
   logs: {
     tail: (lines = 200) => request<LogsResponse>(`/api/logs?lines=${lines}`),
+    clear: () => request<{ cleared: boolean; file: string }>(`/api/logs`, { method: "DELETE" }),
   },
 
   settings: {

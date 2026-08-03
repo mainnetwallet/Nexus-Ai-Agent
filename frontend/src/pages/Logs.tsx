@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { ScrollText, Pause, Play, ArrowDown } from "lucide-react"
+import { ScrollText, Pause, Play, ArrowDown, Trash2 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,6 +33,7 @@ export function Logs() {
   // Starts true (default behavior), and only turns off once the user
   // deliberately scrolls up to read older lines.
   const [autoScroll, setAutoScroll] = useState(true)
+  const [clearing, setClearing] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -65,6 +66,18 @@ export function Logs() {
     bottomRef.current?.scrollIntoView({ block: "end" })
   }
 
+  async function handleClear() {
+    if (clearing) return
+    if (!window.confirm("Clear the backend log file? This can't be undone.")) return
+    setClearing(true)
+    try {
+      await api.logs.clear()
+      await logs.refetch()
+    } finally {
+      setClearing(false)
+    }
+  }
+
   const lines = (logs.data?.lines ?? []).filter((l) => l.toLowerCase().includes(filter.toLowerCase()))
 
   return (
@@ -77,10 +90,16 @@ export function Logs() {
             Tail of {logs.data?.file ?? "the backend log file"}.
           </p>
         </div>
-        <Button variant="subtle" size="sm" onClick={() => setLive((v) => !v)}>
-          {live ? <Pause className="size-4" /> : <Play className="size-4" />}
-          {live ? "Pause" : "Resume"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="subtle" size="sm" onClick={() => setLive((v) => !v)}>
+            {live ? <Pause className="size-4" /> : <Play className="size-4" />}
+            {live ? "Pause" : "Resume"}
+          </Button>
+          <Button variant="subtle" size="sm" onClick={handleClear} disabled={clearing}>
+            <Trash2 className="size-4" />
+            {clearing ? "Clearing…" : "Clear"}
+          </Button>
+        </div>
       </div>
 
       <Input placeholder="Filter logs…" value={filter} onChange={(e) => setFilter(e.target.value)} />
