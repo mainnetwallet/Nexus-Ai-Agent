@@ -223,6 +223,7 @@ class LLMClient:
         candidates = [model] + [m for m in FALLBACK_MODELS.get(self.provider, []) if m != model]
 
         last_rate_limit_error: Optional[httpx.HTTPStatusError] = None
+        rate_limit_hits = 0
 
         for candidate_index, candidate_model in enumerate(candidates):
             for attempt, delay in enumerate([0] + RATE_LIMIT_RETRY_DELAYS):
@@ -230,17 +231,21 @@ class LLMClient:
                     await asyncio.sleep(delay)
                 try:
                     text = await self._dispatch(candidate_model, system_prompt, user_prompt, max_tokens, image)
-                    if candidate_index > 0 or attempt > 0:
+                    if rate_limit_hits:
                         logger.info(
-                            "LLM request served by model=%s (provider=%s) after rate-limit fallback",
+                            "Recovered from rate limit: request succeeded on model=%s (provider=%s) "
+                            "after %d earlier 429(s) on model=%s",
                             candidate_model,
                             self.provider,
+                            rate_limit_hits,
+                            model,
                         )
                     return text
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code != 429:
                         raise
                     last_rate_limit_error = exc
+                    rate_limit_hits += 1
                     logger.warning(
                         "Rate limited (429) on model=%s (provider=%s), attempt=%d",
                         candidate_model,
