@@ -113,6 +113,46 @@ class TaskQueueService:
             await session.flush()
             return task.id
 
+    async def _save_report(
+        self,
+        session,
+        task_id: str,
+        status: str,
+        summary: str,
+        execution_seconds: float,
+        tx_hashes: list,
+        screenshots: list,
+    ) -> None:
+        """Upsert the Report row for a task. Report.task_id is unique (one
+        row per task by design), but a task can run through multiple
+        attempts via the retry path (a failed/crashed attempt with
+        retry_count < max_retries goes back to QUEUED and runs again with
+        the *same* task.id). Each attempt used to unconditionally INSERT a
+        new Report, so the second attempt's insert violated the unique
+        constraint and crashed the task permanently instead of retrying it
+        (sqlite3.IntegrityError: UNIQUE constraint failed: reports.task_id).
+        Updating the existing row in place instead means the report always
+        reflects the most recent attempt, without ever double-inserting."""
+        existing = await session.scalar(select(Report).where(Report.task_id == task_id))
+        if existing is not None:
+            existing.status = status
+            existing.summary = summary
+            existing.execution_seconds = execution_seconds
+            existing.tx_hashes = tx_hashes
+            existing.screenshots = screenshots
+            existing.created_at = dt.datetime.now(dt.timezone.utc)
+        else:
+            session.add(
+                Report(
+                    task_id=task_id,
+                    status=status,
+                    summary=summary,
+                    execution_seconds=execution_seconds,
+                    tx_hashes=tx_hashes,
+                    screenshots=screenshots,
+                )
+            )
+
     def start_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(self._worker_loop())
@@ -252,15 +292,14 @@ class TaskQueueService:
                 async with get_session() as session:
                     db_task = await session.get(Task, task.id)
                     db_task.status = TaskStatus.FAILED
-                    session.add(
-                        Report(
-                            task_id=task.id,
-                            status=TaskStatus.FAILED.value,
-                            summary=f"Profile load failed: {exc}",
-                            execution_seconds=time.time() - started,
-                            tx_hashes=[],
-                            screenshots=[],
-                        )
+                    await self._save_report(
+                        session,
+                        task.id,
+                        status=TaskStatus.FAILED.value,
+                        summary=f"Profile load failed: {exc}",
+                        execution_seconds=time.time() - started,
+                        tx_hashes=[],
+                        screenshots=[],
                     )
                 return
         elif task.profile_label and self.profiles is None:
@@ -439,15 +478,15 @@ class TaskQueueService:
                     else:
                         db_task.status = TaskStatus.FAILED
 
-                report = Report(
-                    task_id=task.id,
+                await self._save_report(
+                    session,
+                    task.id,
                     status=db_task.status.value,
                     summary=outcome.summary,
                     execution_seconds=time.time() - started,
                     tx_hashes=[],
                     screenshots=[s.screenshot_path for s in outcome.steps],
                 )
-                session.add(report)
 
             if self.notify_fn:
                 await self.notify_fn(f"Task on {task.website} finished: {outcome.status} - {outcome.summary}")
@@ -472,15 +511,15 @@ class TaskQueueService:
                     db_task.status = TaskStatus.QUEUED
                 else:
                     db_task.status = TaskStatus.FAILED
-                report = Report(
-                    task_id=task.id,
+                await self._save_report(
+                    session,
+                    task.id,
                     status=db_task.status.value,
                     summary=f"Crashed: {exc}",
                     execution_seconds=time.time() - started,
                     tx_hashes=[],
                     screenshots=[],
                 )
-                session.add(report)
             if self.notify_fn:
                 await self.notify_fn(f"Task on {task.website} crashed: {exc}")
             if self.activity_fn:
