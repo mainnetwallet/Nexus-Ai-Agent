@@ -48,6 +48,7 @@ from backend.skills.library import SkillService
 from backend.skills.teach import TeachModeManager
 from backend.wallet.manager import WalletManager
 from backend.wallet.registry import WalletRegistry
+from backend.wallet.tx_batch import TxBatchManager
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -95,6 +96,7 @@ async def lifespan(app: FastAPI):
     state.memory = MemoryStore()
     state.wallet = WalletManager()
     state.wallet_registry = WalletRegistry()
+    state.tx_batch = TxBatchManager()
 
     state.plugins = PluginRegistry(
         plugins_dir=settings.plugins_dir,

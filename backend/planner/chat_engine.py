@@ -33,6 +33,12 @@ Categories (see CLASSIFIER_SYSTEM_PROMPT):
                      provider, or ask about current provider/model/health
                      (see backend/planner/model_manager.py and
                      ChatEngine._handle_ai_model_command)
+  wallet           - start a multi-turn "queue N transactions" batch (see
+                     backend/wallet/tx_batch.py and
+                     ChatEngine._handle_wallet_command / _handle_batch_turn).
+                     Only queues tasks -- never changes wallet approval
+                     policy, which stays Settings-only (see tx_batch.py's
+                     module docstring for why).
 """
 from __future__ import annotations
 
@@ -63,7 +69,7 @@ meaning as a single intent: e.g. if the assistant's last turn asked "What type o
 (goal combining both: an HTML page for an AI dashboard) rather than classifying "An AI dashboard" alone. \
 If there is no "Conversation so far:" block, classify the message by itself exactly as before.
 {
-  "category": "conversation | question | browser_command | agent_command | task | settings | system_request | skill | mcp",
+  "category": "conversation | question | browser_command | agent_command | task | settings | system_request | skill | mcp | wallet",
   "action": "short action keyword, see guidance below",
   "website": "url if one is mentioned or implied, else empty",
   "goal": "goal description if this describes work to perform, else empty",
@@ -87,7 +93,11 @@ when category=ai_model",
   "ai_provider": "the AI provider named in the message (e.g. claude, gpt, gemini, groq, openrouter, cohere, \
 huggingface, mistral, grok, kimi, qwen, glm...), only set when category=ai_model and a provider is named",
   "ai_task_type": "coding | browser_automation | planning | vision | long_context | fast_response | \
-general_chat | research | reasoning | low_cost -- only set when category=ai_model action=set_routing_rule"
+general_chat | research | reasoning | low_cost -- only set when category=ai_model action=set_routing_rule",
+  "wallet_action": "batch_start -- only set when category=wallet",
+  "tx_count": "integer number of transactions/payments the user wants queued in a batch (e.g. from \"10 ta \
+transaction koro\" / \"queue 10 transactions\" / \"do 5 payments\"), only set when category=wallet \
+action=batch_start, else empty"
 }
 
 Guidance:
@@ -164,7 +174,21 @@ category=ai_model ai_action=temporary_use ai_provider=<the named provider>
 - "show current model" / "which model are you using" -> category=ai_model ai_action=show_model
 - "show available providers" / "list AI providers" -> category=ai_model ai_action=show_providers
 - "show provider health" / "check AI provider status" -> category=ai_model ai_action=show_health
-- "show routing rules" / "what's the routing config" -> category=ai_model ai_action=show_routing"""
+- "show routing rules" / "what's the routing config" -> category=ai_model ai_action=show_routing
+- "queue 10 transactions" / "10 ta transaction koro" / "10 ta tnx koro" / "do 5 payments" / "send 3 \
+transactions using my burner wallet" -- a request to START a multi-step batch of transactions/payments, \
+with a count but not yet the individual destinations -> category=wallet wallet_action=batch_start \
+tx_count=<N> wallet_label=<if a wallet is named, else empty>. Do NOT classify this as category=task -- \
+there is no single website/goal yet, only a count; the destinations come in later messages once the \
+batch has started."""
+
+
+TX_TARGET_EXTRACTION_PROMPT = """The user is naming ONE destination for a single step of a transaction \
+batch they're queuing with an autonomous browser-automation agent (e.g. "0.01 ETH to 0xabc... on \
+uniswap.org", "send 5 USDC to bob.eth", "the same site, address 0xdef..."). Extract the website and the \
+concrete goal for just this one step. Respond with STRICT JSON only, no prose, no markdown fences:
+{"website": "url or domain to act on, else empty", "goal": "one sentence describing exactly what to do \
+on that site for this one transaction"}"""
 
 
 def _now() -> dt.datetime:
@@ -304,6 +328,22 @@ class ChatEngine:
             await self._append(session.id, ChatRole.ASSISTANT, reply, category="skill", meta=meta)
             return {"session_id": session.id, "reply": reply, "category": "skill", "action": "teach_step", "meta": meta}
 
+        # Same interception pattern for an active transaction batch
+        # (backend.wallet.tx_batch.TxBatchManager): once the user has said
+        # e.g. "queue 10 transactions", every following message is treated
+        # as one destination for the batch, not reclassified from scratch,
+        # so a destination like "0.02 ETH to 0xabc..." can't accidentally
+        # be misread as a new unrelated task.
+        tx_batch = getattr(self.app_state, "tx_batch", None) if self.app_state else None
+        if tx_batch is not None and tx_batch.is_active(session.id):
+            try:
+                reply, meta = await self._handle_batch_turn(session, tx_batch, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Tx batch turn failed")
+                reply, meta = f"Something went wrong queuing that: {exc}", {}
+            await self._append(session.id, ChatRole.ASSISTANT, reply, category="wallet", meta=meta)
+            return {"session_id": session.id, "reply": reply, "category": "wallet", "action": "batch_step", "meta": meta}
+
         context = await self._conversation_context(session.id)
         classifier_input = self._classifier_prompt(context, text)
         try:
@@ -335,6 +375,8 @@ class ChatEngine:
                 reply, meta = await self._handle_skill_command(session, intent, text)
             elif category == "mcp":
                 reply, meta = await self._handle_mcp_command(intent, text)
+            elif category == "wallet":
+                reply, meta = await self._handle_wallet_command(session, intent)
             else:
                 reply = await self._handle_conversation(session, text)
         except Exception as exc:  # noqa: BLE001
@@ -630,6 +672,84 @@ class ChatEngine:
             return f"Routing mode: {mode}. Rules: {rules}", {}
 
         return "Not sure which AI model action you mean -- try switch/set default/enable auto routing/show provider.", {}
+
+    # ------------------------------------------------------------------ #
+    # Wallet: multi-turn transaction batches
+    # ------------------------------------------------------------------ #
+    # Queues N tasks against a wallet from chat, one destination per turn.
+    # Deliberately does NOT touch wallet approval policy -- see
+    # backend/wallet/tx_batch.py's module docstring for why that stays
+    # Settings-only. Whether each queued task still needs a human click at
+    # the wallet-extension popup is unchanged by any of this.
+    async def _handle_wallet_command(self, session: ChatSession, intent: dict) -> tuple[str, dict]:
+        tx_batch = getattr(self.app_state, "tx_batch", None) if self.app_state else None
+        if tx_batch is None:
+            return "Transaction batching isn't enabled in this deployment.", {}
+
+        action = (intent.get("wallet_action") or intent.get("action") or "").strip().lower()
+        if action != "batch_start":
+            return (
+                "Not sure which wallet action you mean -- try \"queue 10 transactions\" to start a batch.",
+                {},
+            )
+
+        try:
+            count = int(intent.get("tx_count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            return "How many transactions should I queue up?", {}
+
+        wallet_label = (intent.get("wallet_label") or "").strip() or None
+        tx_batch.start(session.id, count, wallet_label)
+        wallet_note = f" using {wallet_label}" if wallet_label else ""
+        return (
+            f"Queuing {count} transaction(s){wallet_note}. Tell me where each one goes, one at a time "
+            "(site/address and what to do) -- I'll queue them as you go. Say \"cancel\" to stop early. "
+            "Each still goes through your configured wallet-approval policy -- I'm only queuing them, "
+            "not changing how they get approved.",
+            {"tx_count": count, "wallet_label": wallet_label},
+        )
+
+    async def _handle_batch_turn(self, session: ChatSession, tx_batch: Any, text: str) -> tuple[str, dict]:
+        """One turn of an active transaction batch (backend.wallet.
+        tx_batch.TxBatchManager). "cancel" (and close synonyms) stops the
+        batch deterministically without going through the LLM; anything
+        else is parsed as one destination via TX_TARGET_EXTRACTION_PROMPT
+        and queued as a normal task."""
+        lowered = text.strip().lower().rstrip(".!")
+        if lowered in ("cancel", "cancel batch", "stop", "stop batch", "abort", "never mind"):
+            tx_batch.cancel(session.id)
+            return "Cancelled -- nothing further will be queued for this batch.", {}
+
+        draft = tx_batch.get_draft(session.id)
+        if draft is None:
+            return "No active transaction batch -- say \"queue N transactions\" to start one.", {}
+
+        extraction = await self.llm.complete_json(TX_TARGET_EXTRACTION_PROMPT, text, task_type=TaskType.FAST_RESPONSE)
+        website = (extraction.get("website") or "").strip()
+        goal = (extraction.get("goal") or text).strip()
+        if not website:
+            return "Which site or address should this one go to?", {}
+
+        task_id = await self.queue.enqueue(website, goal, draft.wallet_label, notes="", priority=1)
+        await self._touch_session(session.id, last_task_id=task_id)
+        updated = tx_batch.record_queued(session.id, task_id)
+        done = len(updated.queued) if updated else 1
+        total = updated.total if updated else draft.total
+        remaining = updated.remaining if updated else 0
+
+        if remaining > 0:
+            return (
+                f"Queued {done}/{total}: {goal} on {website} (task_id={task_id}). "
+                f"{remaining} more to go -- where's next?",
+                {"task_id": task_id},
+            )
+        return (
+            f"Queued {done}/{total}: {goal} on {website} (task_id={task_id}). "
+            f"That's all {total} -- batch complete.",
+            {"task_id": task_id},
+        )
 
     # ------------------------------------------------------------------ #
     # MCP Core

@@ -10,6 +10,7 @@ from backend.database.session import get_session, init_db
 from backend.planner.agent_runtime import AgentRuntime
 from backend.planner.chat_engine import ChatEngine
 from backend.planner.task_queue import TaskQueueService
+from backend.wallet.tx_batch import TxBatchManager
 
 
 class FakeMemory:
@@ -34,9 +35,10 @@ class FakeLiveSession:
 
 
 class FakeAppState:
-    def __init__(self, agent=None, live_session=None):
+    def __init__(self, agent=None, live_session=None, tx_batch=None):
         self.agent = agent
         self.live_session = live_session or FakeLiveSession()
+        self.tx_batch = tx_batch if tx_batch is not None else TxBatchManager()
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -114,6 +116,61 @@ async def test_task_message_enqueues_task(engine):
 
     session = await chat.get_or_create_session("s2")
     assert session.last_task_id == result["meta"]["task_id"]
+
+
+@pytest.mark.asyncio
+async def test_wallet_batch_queues_one_task_per_turn(engine):
+    chat, queue, _ = engine
+
+    chat.llm.complete_json.return_value = {
+        "category": "wallet",
+        "wallet_action": "batch_start",
+        "tx_count": 3,
+        "wallet_label": "burner-01",
+    }
+    start_result = await chat.send_message("s-batch", "queue 3 transactions using burner-01")
+    assert start_result["category"] == "wallet"
+    assert "3" in start_result["reply"]
+
+    # Once a batch is active, follow-up turns must NOT go back through the
+    # intent classifier -- they're destinations, handled deterministically.
+    chat.llm.complete_json.reset_mock()
+    chat.llm.complete_json.return_value = {"website": "https://example.com/a", "goal": "send 0.01 ETH"}
+    r1 = await chat.send_message("s-batch", "0.01 ETH to 0xabc on example.com/a")
+    assert chat.llm.complete_json.await_count == 1  # only the target-extraction call, not the classifier
+    assert "1/3" in r1["reply"]
+
+    chat.llm.complete_json.return_value = {"website": "https://example.com/b", "goal": "send 0.02 ETH"}
+    r2 = await chat.send_message("s-batch", "0.02 ETH to 0xdef on example.com/b")
+    assert "2/3" in r2["reply"]
+
+    chat.llm.complete_json.return_value = {"website": "https://example.com/c", "goal": "send 0.03 ETH"}
+    r3 = await chat.send_message("s-batch", "0.03 ETH to 0x123 on example.com/c")
+    assert "3/3" in r3["reply"]
+    assert "complete" in r3["reply"].lower()
+
+    tasks = queue.queue_status()
+    assert tasks["worker_paused"] is False  # smoke: queue still responds after 3 enqueues
+
+    # Batch is retired -- the next message goes back through normal classification.
+    chat.llm.complete_json.return_value = {"category": "conversation"}
+    r4 = await chat.send_message("s-batch", "thanks")
+    assert r4["category"] == "conversation"
+
+
+@pytest.mark.asyncio
+async def test_wallet_batch_can_be_cancelled_midway(engine):
+    chat, _, _ = engine
+    chat.llm.complete_json.return_value = {"category": "wallet", "wallet_action": "batch_start", "tx_count": 5}
+    await chat.send_message("s-cancel", "queue 5 transactions")
+
+    result = await chat.send_message("s-cancel", "cancel")
+    assert "cancel" in result["reply"].lower()
+
+    # Cancelling ends the batch -- the next message is classified normally.
+    chat.llm.complete_json.return_value = {"category": "conversation"}
+    followup = await chat.send_message("s-cancel", "hi")
+    assert followup["category"] == "conversation"
 
 
 @pytest.mark.asyncio

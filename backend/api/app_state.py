@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from backend.mcp.manager import MCPManager
     from backend.identity.registry import ProfileRegistry
     from backend.identity.manager import ProfileManager
+    from backend.wallet.tx_batch import TxBatchManager
 
 
 class AppState:
@@ -30,6 +31,7 @@ class AppState:
     chat: Optional["ChatEngine"] = None
     skills: Optional["SkillService"] = None
     teach: Optional["TeachModeManager"] = None
+    tx_batch: Optional["TxBatchManager"] = None
     mcp: Optional["MCPManager"] = None
     profile_registry: Optional["ProfileRegistry"] = None
     profiles: Optional["ProfileManager"] = None
