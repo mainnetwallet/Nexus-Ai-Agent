@@ -7,7 +7,7 @@ class FakeLLM:
     def __init__(self, responses):
         self._responses = list(responses)
 
-    async def complete_json(self, system_prompt, user_prompt, max_tokens=1500):
+    async def complete_json(self, system_prompt, user_prompt, max_tokens=1500, task_type=None):
         return self._responses.pop(0)
 
 

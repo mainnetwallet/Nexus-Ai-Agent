@@ -19,7 +19,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from backend.config.settings import settings
 from backend.planner.chat_engine import ChatEngine
 from backend.planner.llm_client import LLMClient
-from backend.planner.model_manager import model_manager
+from backend.planner.model_manager import TaskType, model_manager
 from backend.planner.task_queue import TaskQueueService
 
 logger = logging.getLogger("nexus.telegram")
@@ -333,7 +333,9 @@ class NexusTelegramBot:
     @auth_required
     async def on_free_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
-            intent = await self.llm.complete_json(INTENT_SYSTEM_PROMPT, update.message.text)
+            intent = await self.llm.complete_json(
+                INTENT_SYSTEM_PROMPT, update.message.text, task_type=TaskType.FAST_RESPONSE
+            )
         except Exception:
             await update.message.reply_text("Couldn't parse that — try /help for commands.")
             return

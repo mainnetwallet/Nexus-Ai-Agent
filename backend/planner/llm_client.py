@@ -144,19 +144,32 @@ class LLMClient:
     # ------------------------------------------------------------------ #
     # Public API (unchanged signatures -- callers are unaffected)
     # ------------------------------------------------------------------ #
-    async def complete_json(self, system_prompt: str, user_prompt: str, max_tokens: int = 1500) -> dict[str, Any]:
+    async def complete_json(
+        self, system_prompt: str, user_prompt: str, max_tokens: int = 1500, task_type: Optional[Any] = None
+    ) -> dict[str, Any]:
         """
         Sends a prompt that requests a strict JSON response and parses it.
         Raises ValueError if the provider returns something unparsable.
+
+        `task_type` is accepted but ignored here -- LLMClient is a single,
+        fixed-provider implementation with no routing logic. It exists so
+        callers can use the exact same call signature as
+        ModelManager.complete_json() (which *does* use task_type for smart
+        routing) interchangeably, e.g. when a raw LLMClient is injected in
+        tests/tools that bypass ModelManager.
         """
         raw = await self._complete(system_prompt, user_prompt, max_tokens, image_path=None, model=self.model)
         return self._parse_json(raw, context="Planner")
 
-    async def complete_text(self, system_prompt: str, user_prompt: str, max_tokens: int = 800) -> str:
+    async def complete_text(
+        self, system_prompt: str, user_prompt: str, max_tokens: int = 800, task_type: Optional[Any] = None
+    ) -> str:
         """
         Plain conversational completion -- returns raw text, no JSON parsing.
         Used for general chat (answering questions, small talk) as opposed
         to complete_json()'s structured planner/intent calls.
+
+        `task_type` is accepted but ignored (see complete_json docstring).
         """
         return await self._complete(system_prompt, user_prompt, max_tokens, image_path=None, model=self.model)
 
@@ -166,6 +179,7 @@ class LLMClient:
         user_prompt: str,
         image_path: str,
         max_tokens: int = 1200,
+        task_type: Optional[Any] = None,
     ) -> dict[str, Any]:
         raw = await self._complete(system_prompt, user_prompt, max_tokens, image_path=image_path, model=self.vision_model)
         return self._parse_json(raw, context="Vision")

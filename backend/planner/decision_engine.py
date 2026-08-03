@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 from backend.browser.engine import PageSnapshot
 from backend.planner.llm_client import LLMClient
-from backend.planner.model_manager import model_manager
+from backend.planner.model_manager import TaskType, model_manager
 from backend.vision.vision_engine import VisionAnalyzer, VisionPerception
 
 logger = logging.getLogger("nexus.decision_engine")
@@ -161,7 +161,7 @@ INTERACTIVE ELEMENTS (up to 150):
 {snapshot.interactive_elements}
 """
         try:
-            raw = await self.llm.complete_json(SYSTEM_PROMPT, user_prompt)
+            raw = await self.llm.complete_json(SYSTEM_PROMPT, user_prompt, task_type=TaskType.BROWSER_AUTOMATION)
         except Exception:
             logger.exception("Decision engine LLM call failed")
             raw = {"action": "blocked", "reasoning": "LLM planning call failed", "target": "", "value": ""}

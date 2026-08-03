@@ -4,6 +4,75 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - AI Model Manager integration fix (route every core LLM call through ModelManager)
+
+The AI Model Manager feature below (manual switching, smart routing,
+cross-provider fallback, temporary overrides) was fully implemented but
+only actually reachable from the Chat `ai_model` command, Settings, and
+the AI Models dashboard/API. The agent's real execution paths —
+`agent_loop`, `decision_engine`, `vision_engine`, `teach` (Teach Mode),
+the Telegram bot, and `chat_engine`'s classifier/reply calls —
+instantiated `LLMClient()` directly and read `settings.llm_provider`
+only, with no cross-provider fallback (only same-provider, same-model
+429 retry). In other words: if the single configured provider's key was
+missing, invalid, or rate-limited, the agent broke even when other
+provider keys were configured and healthy, and switching providers via
+Settings/AI Models/chat had no effect on what those paths actually used.
+
+This entry closes that gap. No architecture change, no new modules —
+every core path now defaults to the existing `model_manager` singleton
+instead of constructing its own `LLMClient()`.
+
+### Changed
+- `backend/planner/agent_loop.py`, `backend/planner/decision_engine.py`,
+  `backend/vision/vision_engine.py`, `backend/skills/teach.py`,
+  `backend/telegram/bot.py`, `backend/planner/chat_engine.py` — default
+  `self.llm` is now the `model_manager` singleton
+  (`backend/planner/model_manager.py`) instead of `LLMClient()`. Explicit
+  `llm=` injection (used throughout the test suite) is untouched, so
+  tests, tools, and any other direct `LLMClient` consumer keep working
+  exactly as before.
+- `decision_engine.py`'s planning call, `teach.py`'s three step/skill/
+  correction parses, the Telegram bot's intent classifier, and
+  `chat_engine.py`'s classifier + reply calls now pass an explicit
+  `task_type` (`BROWSER_AUTOMATION`, `PLANNING`, `FAST_RESPONSE`, or
+  `GENERAL_CHAT`) so Smart Routing (when enabled) actually picks a
+  task-appropriate provider for each of these call sites, not just for
+  `vision_engine` (which already hardcoded `TaskType.VISION`).
+- `backend/planner/llm_client.py` — `complete_text()`/`complete_json()`/
+  `complete_json_with_image()` now accept (and ignore) an optional
+  `task_type` keyword arg, so any call site or test double can use the
+  exact same call signature against a raw `LLMClient` or the
+  `ModelManager` interchangeably. `LLMClient` remains a single, fixed
+  provider implementation — it does not route or fall back itself.
+- `backend/tests/test_agent_loop.py`, `backend/tests/test_decision_engine.py`
+  — `FakeLLM.complete_json()` now accepts the `task_type` kwarg.
+
+### Result
+- **Manual model switching** (`/api/ai-models/switch`, Settings, chat
+  `"switch to Claude"`) now affects every core path — agent runs,
+  Teach Mode, Telegram, and chat — not just new calls made through the
+  API layer.
+- **Smart routing** (task-type -> provider) is live for browser
+  automation, planning, vision, fast-response classification, and
+  general chat, wherever those task types actually occur in the code.
+- **Cross-provider fallback** is live everywhere: however many provider
+  API keys are configured in `.env`, that's how many providers
+  participate in the fallback chain for every call site above — 1 key
+  configured means only that provider is used, N keys means automatic
+  fallback across all N on timeout/HTTP error/rate-limit/bad response.
+- **Temporary overrides** (`use_temporarily()`, chat `"use Groq for this
+  task only"`) now apply to the very next call regardless of which
+  module makes it, since every path resolves through the same
+  `model_manager` singleton.
+
+### Verified
+- Backend boots clean (`uvicorn backend.main:app`) with no import errors
+  from the new wiring; no circular imports introduced.
+- Frontend: `tsc -b && vite build` clean, `vite` dev server boots and
+  serves `200`.
+- Full backend suite: **365 passed**, 0 failed.
+
 ## [Unreleased] - AI Model Manager (multi-provider LLM switching, smart routing, fallback)
 
 Extends the existing single-provider `LLMClient` (backend/planner/llm_client.py)

@@ -1,3 +1,60 @@
+# Nexus-Agent (Unreleased) — AI Model Manager integration fix
+
+The AI Model Manager (manual switching, smart routing, cross-provider
+fallback, temporary overrides — see the entry below) was built as a
+standalone layer but several core execution paths bypassed it and
+called `LLMClient()` directly: `agent_loop`, `decision_engine`,
+`vision_engine`, Teach Mode (`teach.py`), the Telegram bot, and
+`chat_engine`'s classifier/reply calls. Those paths only ever used the
+single provider in `settings.llm_provider`, with no cross-provider
+fallback — so a missing/invalid/rate-limited key on that one provider
+broke the agent even with other valid keys configured, and switching
+providers from Settings/AI Models/chat didn't change what these paths
+actually used.
+
+## What changed
+
+- All six core call sites now default to the existing `model_manager`
+  singleton instead of constructing their own `LLMClient()`. This is a
+  wiring change only — no new modules, no architecture change.
+  `LLMClient` stays exactly what it was: a single-provider HTTP
+  implementation that `ModelManager` dispatches to.
+- The planning call in `decision_engine.py`, the three parse calls in
+  `teach.py`, the Telegram intent classifier, and `chat_engine.py`'s
+  classifier + reply calls now pass an explicit `task_type` so Smart
+  Routing has something to route on at every call site, not just vision.
+- `LLMClient.complete_text/complete_json/complete_json_with_image` grew
+  an optional, ignored `task_type` kwarg so the call signature is
+  identical whether `self.llm` is a raw `LLMClient` (tests, explicit
+  injection) or the `ModelManager` singleton.
+
+## Result
+
+- Manual switching, smart routing, cross-provider fallback, and
+  temporary "use this provider once" overrides now apply uniformly
+  across agent runs, Teach Mode, Telegram, and chat — not just the
+  Settings/AI Models API surface.
+- Fallback scope is exactly as many providers as have a configured
+  API key in `.env`: one key configured -> that provider only; several
+  keys configured -> automatic fallback across all of them, everywhere
+  in the codebase.
+
+## Compatibility
+
+Fully backward compatible. Any code that explicitly injects its own
+`llm=LLMClient(...)` (all of the existing test suite does this) is
+completely unaffected — the change only touches each module's
+*default* when no `llm` is passed in.
+
+## Verified
+
+- Backend: `uvicorn backend.main:app` boots clean, no import errors,
+  no circular imports.
+- Frontend: `tsc -b && vite build` clean; `vite` dev server serves `200`.
+- Full backend test suite: **365 passed**, 0 failed.
+
+---
+
 # Nexus-Agent (Unreleased) — AI Model Manager
 
 Adds a production-ready **AI Model Manager** on top of the existing

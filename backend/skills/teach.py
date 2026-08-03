@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from backend.planner.llm_client import LLMClient
-from backend.planner.model_manager import model_manager
+from backend.planner.model_manager import TaskType, model_manager
 
 logger = logging.getLogger("nexus.skills.teach")
 
@@ -124,7 +124,7 @@ class TeachModeManager:
         if not draft:
             return None
         try:
-            step = await self.llm.complete_json(STEP_FROM_TEXT_PROMPT, text)
+            step = await self.llm.complete_json(STEP_FROM_TEXT_PROMPT, text, task_type=TaskType.BROWSER_AUTOMATION)
         except Exception:
             logger.exception("Teach Mode step parse failed")
             return None
@@ -145,7 +145,7 @@ class TeachModeManager:
     # ------------------------------------------------------------------ #
     async def parse_skill_from_text(self, text: str) -> dict[str, Any]:
         try:
-            parsed = await self.llm.complete_json(SKILL_FROM_TEXT_PROMPT, text)
+            parsed = await self.llm.complete_json(SKILL_FROM_TEXT_PROMPT, text, task_type=TaskType.PLANNING)
         except Exception:
             logger.exception("Natural-language skill parse failed")
             return {"name": "", "workflow": []}
@@ -164,7 +164,7 @@ class TeachModeManager:
     # ------------------------------------------------------------------ #
     async def parse_correction(self, instruction: str) -> dict[str, Any]:
         try:
-            step = await self.llm.complete_json(CORRECTION_PROMPT, instruction)
+            step = await self.llm.complete_json(CORRECTION_PROMPT, instruction, task_type=TaskType.BROWSER_AUTOMATION)
         except Exception:
             logger.exception("Correction parse failed")
             return {"action": "click", "target": "", "value": "", "description": instruction}

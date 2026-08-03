@@ -45,6 +45,7 @@ from sqlalchemy import select
 from backend.database.models import ChatMessage, ChatRole, ChatSession, Report, SkillSource, Task, TaskStatus
 from backend.database.session import get_session
 from backend.planner.llm_client import LLMClient
+from backend.planner.model_manager import TaskType
 from backend.planner.model_manager import model_manager as _default_model_manager
 
 logger = logging.getLogger("nexus.chat")
@@ -232,7 +233,7 @@ class ChatEngine:
             return {"session_id": session.id, "reply": reply, "category": "skill", "action": "teach_step", "meta": meta}
 
         try:
-            intent = await self.llm.complete_json(CLASSIFIER_SYSTEM_PROMPT, text)
+            intent = await self.llm.complete_json(CLASSIFIER_SYSTEM_PROMPT, text, task_type=TaskType.FAST_RESPONSE)
         except Exception:
             logger.exception("Chat classifier failed, falling back to conversation")
             intent = {"category": "conversation"}
@@ -783,7 +784,7 @@ class ChatEngine:
             f"Last known error this session: {session.last_error or 'none'}"
         )
         user_prompt = f"{convo}\nuser: {text}" if convo else text
-        reply = await self.llm.complete_text(system_prompt, user_prompt)
+        reply = await self.llm.complete_text(system_prompt, user_prompt, task_type=TaskType.GENERAL_CHAT)
         return reply.strip() or "..."
 
     # ------------------------------------------------------------------ #
