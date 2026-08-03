@@ -1,8 +1,8 @@
-.venv/
+.env
+logs/
+.ruff_cache/
+data/chroma/
+data/*.db
+data/mcp_connectors.json
 __pycache__/
 *.pyc
-data/
-logs/*.log
-screenshots/*.png
-.env
-node_modules/
