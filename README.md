@@ -60,6 +60,11 @@ cp .env.example .env
 ```
 `.env`-এ `ANTHROPIC_API_KEY` আর `API_AUTH_TOKEN` বসান।
 
+> Windows-এ `.env` ফাইল খুলতে (dot দিয়ে শুরু বলে File Explorer-এ hidden থাকে):
+> ```powershell
+> notepad .env
+> ```
+
 **৩) Install**
 
 Windows (PowerShell):
