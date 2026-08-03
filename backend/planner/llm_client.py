@@ -20,7 +20,7 @@ from backend.config.settings import settings, LLMProvider
 logger = logging.getLogger("nexus.llm")
 
 DEFAULT_MODELS = {
-    LLMProvider.ANTHROPIC: "claude-opus-5",
+    LLMProvider.ANTHROPIC: "claude-opus-4-6",
     LLMProvider.OPENAI: "gpt-5.6-sol",
     # "-latest" aliases are managed by Google and hot-swapped to the newest
     # release of that tier automatically (per Gemini's model-naming docs),
@@ -426,10 +426,17 @@ class LLMClient:
             ]
         else:
             content = user_prompt
+        api_key = _require_api_key(settings.anthropic_api_key, "Anthropic", "ANTHROPIC_API_KEY")
         return (
             settings.anthropic_base_url,
             {
-                "x-api-key": _require_api_key(settings.anthropic_api_key, "Anthropic", "ANTHROPIC_API_KEY"),
+                # Real api.anthropic.com wants x-api-key. Some Anthropic-shaped
+                # gateways (e.g. AgentRouter) instead expect the key sent as a
+                # Bearer token -- see their "ANTHROPIC_AUTH_TOKEN ... sent as
+                # the Bearer Token" docs. Sending both is safe: each side reads
+                # the header it cares about and ignores the other.
+                "x-api-key": api_key,
+                "Authorization": f"Bearer {api_key}",
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
