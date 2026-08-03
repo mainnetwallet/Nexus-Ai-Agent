@@ -184,7 +184,7 @@ class Settings(BaseSettings):
     mcp_enabled: bool = Field(default=True, description="Master switch for the MCP Core (tool connectors)")
     mcp_filesystem_enabled: bool = Field(default=True)
     mcp_filesystem_roots: str = Field(default="", description="Comma separated absolute paths the filesystem connector may access. Empty = project BASE_DIR only")
-    mcp_terminal_enabled: bool = Field(default=False, description="Terminal connector is real code execution -- opt-in only")
+    mcp_terminal_enabled: bool = Field(default=True, description="Terminal connector is real code execution -- opt-in only")
     mcp_terminal_commands_allowlist: str = Field(default="", description="Comma separated executable names the terminal connector may run. Empty = connector's built-in default allow-list")
     mcp_terminal_timeout_seconds: int = Field(default=30)
     mcp_terminal_working_dir: str = Field(default=str(DATA_DIR))
