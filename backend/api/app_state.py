@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from backend.identity.manager import ProfileManager
     from backend.wallet.tx_batch import TxBatchManager
     from backend.identity.pending_profile import PendingProfileManager
-    from backend.identity.pending_profile import PendingProfileManager
 
 
 class AppState:
