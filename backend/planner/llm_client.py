@@ -21,7 +21,7 @@ logger = logging.getLogger("nexus.llm")
 
 DEFAULT_MODELS = {
     LLMProvider.ANTHROPIC: "claude-opus-4-6",
-    LLMProvider.OPENAI: "gpt-5.6-sol",
+    LLMProvider.OPENAI: "gpt-5.6",
     # "-latest" aliases are managed by Google and hot-swapped to the newest
     # release of that tier automatically (per Gemini's model-naming docs),
     # so this never needs to be manually bumped as new Gemini versions ship.
