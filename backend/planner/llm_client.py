@@ -11,7 +11,6 @@ import logging
 import mimetypes
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import quote
 
 import httpx
 
@@ -431,8 +430,8 @@ class LLMClient:
             data, mime_type = image
             parts.append({"inline_data": {"mime_type": mime_type, "data": data}})
         return (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={quote(settings.gemini_api_key)}",
-            {},
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            {"x-goog-api-key": settings.gemini_api_key},
             {
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "contents": [{"parts": parts}],

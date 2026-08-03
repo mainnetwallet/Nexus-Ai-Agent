@@ -46,15 +46,16 @@ def test_openai_vs_openrouter_use_different_urls_and_keys(monkeypatch):
     assert headers["Authorization"] == "Bearer or-key"
 
 
-def test_gemini_request_puts_key_in_url_not_body(monkeypatch):
+def test_gemini_request_puts_key_in_header_not_url_or_body(monkeypatch):
     from backend.config import settings as settings_module
 
     monkeypatch.setattr(settings_module.settings, "gemini_api_key", "gem-key")
     client = LLMClient(provider=LLMProvider.GEMINI, model="gemini-x")
 
-    url, _headers, body = client._build_gemini("gemini-x", "sys", "hi", 100, None)
+    url, headers, body = client._build_gemini("gemini-x", "sys", "hi", 100, None)
 
-    assert "key=gem-key" in url
+    assert headers["x-goog-api-key"] == "gem-key"
+    assert "gem-key" not in url
     assert "gem-key" not in str(body)
     assert body["systemInstruction"]["parts"][0]["text"] == "sys"
 
