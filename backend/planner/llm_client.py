@@ -20,8 +20,8 @@ from backend.config.settings import settings, LLMProvider
 logger = logging.getLogger("nexus.llm")
 
 DEFAULT_MODELS = {
-    LLMProvider.ANTHROPIC: "claude-sonnet-4-6",
-    LLMProvider.OPENAI: "gpt-4.1",
+    LLMProvider.ANTHROPIC: "claude-opus-5",
+    LLMProvider.OPENAI: "gpt-5.6-sol",
     # "-latest" aliases are managed by Google and hot-swapped to the newest
     # release of that tier automatically (per Gemini's model-naming docs),
     # so this never needs to be manually bumped as new Gemini versions ship.
@@ -110,8 +110,6 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[LLMProvider, _OpenAICompatConfig] = {
 # code changes here. flash itself is the default model (see
 # DEFAULT_MODELS above), so it's not repeated here.
 FALLBACK_MODELS: dict[LLMProvider, list[str]] = {
-    LLMProvider.ANTHROPIC: ["claude-sonnet-4-6"],
-    LLMProvider.OPENAI: ["gpt-4.1-mini"],
     LLMProvider.GEMINI: ["gemini-flash-lite-latest", "gemini-pro-latest"],
     LLMProvider.OPENROUTER: ["anthropic/claude-sonnet-4.6"],
 }
