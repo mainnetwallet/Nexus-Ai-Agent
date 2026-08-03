@@ -31,12 +31,14 @@ logger = logging.getLogger("nexus.telegram")
 INTENT_SYSTEM_PROMPT = """You route free-form Telegram messages sent to an autonomous browser-automation \
 agent into a structured intent. Respond with STRICT JSON only, no prose, no markdown fences:
 {
-  "intent": "start_task | pause | resume | stop | restart | status | tasks | report | logs | screenshot | \
-health | diagnostics | resources | browser_status | chat | unknown",
+  "intent": "start_task | pause | resume | pause_task | resume_task | cancel_task | stop | restart | \
+status | tasks | report | logs | screenshot | health | diagnostics | resources | browser_status | chat | \
+unknown",
   "website": "url if mentioned, else empty",
   "goal": "goal description if this is a start_task intent, else empty",
   "wallet_label": "wallet label if mentioned, else empty",
-  "profile_label": "browser profile name or id if mentioned, else empty"
+  "profile_label": "browser profile name or id if mentioned, else empty",
+  "task_id": "the specific task id mentioned, only for pause_task/resume_task/cancel_task, else empty"
 }
 
 Guidance:
@@ -47,6 +49,14 @@ Guidance:
 - "give me a summary / report on the last task" -> report
 - "restart / reboot the agent" -> restart
 - "what tasks do you have / show me the queue" -> tasks
+- "pause" / "pause everything" (the whole agent/worker, no specific task named) -> pause
+- "resume" / "resume everything" (the whole agent/worker, no specific task named) -> resume
+- "pause task" / "pause this task" / "pause task <id>" (one specific task) -> pause_task \
+task_id=<id if given, else empty>
+- "resume task" / "resume this task" / "resume task <id>" (one specific task) -> resume_task \
+task_id=<id if given, else empty>
+- "cancel task" / "cancel this task" / "cancel it" / "cancel task <id>" -> cancel_task \
+task_id=<id if given, else empty>
 - Greetings, general questions, small talk, or anything that isn't an action on the \
 agent/queue/browser (e.g. "hi", "what can you do?", "explain what a diamond proxy contract is", \
 "what's up") -> chat
@@ -121,6 +131,7 @@ class NexusTelegramBot:
         app.add_handler(CommandHandler("pause", self.cmd_pause))
         app.add_handler(CommandHandler("resume", self.cmd_resume))
         app.add_handler(CommandHandler("stop", self.cmd_stop))
+        app.add_handler(CommandHandler("cancel", self.cmd_cancel))
         app.add_handler(CommandHandler("report", self.cmd_report))
         app.add_handler(CommandHandler("logs", self.cmd_logs))
         app.add_handler(CommandHandler("screenshot", self.cmd_screenshot))
@@ -158,7 +169,7 @@ class NexusTelegramBot:
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "/task <website> | <goal> | <wallet>\n"
-            "/status /pause /resume /stop /restart\n"
+            "/status /pause [task_id] /resume [task_id] /cancel [task_id] /stop /restart\n"
             "/report /logs /screenshot /memory\n"
             "/tasks /settings /browser\n"
             "/health /diagnostics /resources\n"
@@ -193,6 +204,14 @@ class NexusTelegramBot:
 
     @auth_required
     async def cmd_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # "/pause" (no args) pauses the whole worker, unchanged. "/pause
+        # <task_id>" scopes to that one task instead -- delegated to
+        # ChatEngine so Telegram/Chat/Dashboard/REST API share the same
+        # single-task pause logic (backend/planner/task_queue.py pause_task).
+        task_id = context.args[0] if context and context.args else ""
+        if task_id:
+            await self._handle_chat_text(update, f"pause task {task_id}")
+            return
         agent = getattr(self.app_state, "agent", None) if self.app_state else None
         if agent:
             await agent.pause()
@@ -202,12 +221,26 @@ class NexusTelegramBot:
 
     @auth_required
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        task_id = context.args[0] if context and context.args else ""
+        if task_id:
+            await self._handle_chat_text(update, f"resume task {task_id}")
+            return
         agent = getattr(self.app_state, "agent", None) if self.app_state else None
         if agent:
             await agent.resume()
         else:
             self.queue.resume()
         await update.message.reply_text("Resumed.")
+
+    @auth_required
+    async def cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Cancels a single task: "/cancel <task_id>", or "/cancel" to cancel
+        whichever task is currently running. Delegated to ChatEngine's
+        agent_command/cancel_task handling (same code path as Chat/Dashboard/
+        REST API) rather than reimplemented here."""
+        task_id = context.args[0] if context and context.args else ""
+        text = f"cancel task {task_id}" if task_id else "cancel task"
+        await self._handle_chat_text(update, text)
 
     @auth_required
     async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -354,6 +387,11 @@ class NexusTelegramBot:
             await self.cmd_resume(update, context)
         elif kind == "stop":
             await self.cmd_stop(update, context)
+        elif kind in ("pause_task", "resume_task", "cancel_task"):
+            verb = kind.split("_")[0]
+            task_id = intent.get("task_id") or ""
+            text = f"{verb} task {task_id}".strip()
+            await self._handle_chat_text(update, text)
         elif kind == "restart":
             await self.cmd_restart(update, context)
         elif kind == "status":

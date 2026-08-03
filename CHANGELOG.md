@@ -4,6 +4,65 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Single Task Control (pause/resume/cancel one task from Chat/Telegram/Dashboard/REST API)
+
+`TaskQueueService.pause_task/resume_task/cancel` (backend/planner/task_queue.py)
+and the corresponding REST endpoints (`POST /api/tasks/{id}/pause|resume|cancel`,
+backend/api/routes_tasks.py) already existed and the Dashboard's Tasks page
+already had working buttons wired to them. What was missing was the same
+control from Chat and Telegram — both only supported pausing/resuming the
+*entire* agent worker, with no way to target one specific task, and no
+"cancel" concept at all in either. This entry closes that gap by extending
+the existing agent-command dispatch in both, instead of adding a parallel
+task-control code path.
+
+### Changed
+- `backend/planner/chat_engine.py` — `CLASSIFIER_SYSTEM_PROMPT` gained a
+  `task_id` field and guidance for three new `agent_command` actions:
+  `pause_task`, `resume_task`, `cancel_task`. `_handle_agent_command` now
+  routes these to `TaskQueueService.pause_task/resume_task/cancel` instead
+  of the global `queue.pause()/resume()`. When no `task_id` is given,
+  `pause_task`/`cancel_task` target whichever task is currently running
+  (`queue.current_task_id`); `resume_task` targets the first paused task.
+  Plain `"pause"`/`"resume"`/`"stop"` (no task named) are untouched and
+  still control the global worker exactly as before — this was verified
+  with a dedicated backward-compatibility test.
+- `backend/telegram/bot.py` — `/pause` and `/resume` now accept an optional
+  `<task_id>` argument (no arg = unchanged global behavior); added a new
+  `/cancel [task_id]` command. `INTENT_SYSTEM_PROMPT` (the free-text NLU
+  classifier) gained `pause_task`/`resume_task`/`cancel_task` intents plus
+  a `task_id` field, which `on_free_text` delegates to the same ChatEngine
+  logic above via a synthetic chat message — one place (ChatEngine) still
+  owns the actual task-control decision, Telegram just routes to it.
+- `backend/tests/test_chat_engine.py`, `backend/tests/test_telegram_bot.py`
+  — added coverage for: pausing/resuming/cancelling by explicit id,
+  defaulting to the currently-running task, the "no task running" and
+  "unknown task id" error replies, and the bare-`"pause"`-still-global
+  regression test.
+
+### Fixed (unrelated pre-existing test bugs, found while validating this change)
+- `backend/tests/test_llm_client.py::test_anthropic_vision_request_embeds_image`
+  didn't set `settings.anthropic_api_key` before calling `_build_anthropic`,
+  so it failed in any environment without a real key configured. Now
+  monkeypatches a test key, matching the sibling text-request test right
+  above it.
+- `backend/tests/test_llm_client.py` — `LLMClient._complete`'s sticky-fallback
+  cache (`_sticky_fallback_model`, a process-global dict) was leaking state
+  between tests: `test_rate_limited_primary_model_falls_back_and_succeeds`
+  left `LLMProvider.GEMINI` pointed at `"gemini-flash-backup"`, which then
+  made `test_non_rate_limit_error_raises_immediately_without_fallback` try
+  the backup model before the primary, failing its assertion. Added an
+  autouse fixture that clears the cache before and after every test in
+  the file.
+
+### Not changed
+- No new modules, no database schema change, no new Task states. Task
+  state tracking (`TaskStatus.RUNNING/PAUSED/SUCCEEDED/FAILED/CANCELLED`,
+  backend/database/models.py) and pause-preserves-progress behavior
+  (`TaskQueueService._run_task`'s `wait_if_paused`, which blocks between
+  steps and resumes from the next recorded `TaskStep`) were already
+  correct and untouched.
+
 ## [Unreleased] - AI Model Manager integration fix (route every core LLM call through ModelManager)
 
 The AI Model Manager feature below (manual switching, smart routing,

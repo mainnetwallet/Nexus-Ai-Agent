@@ -182,3 +182,106 @@ async def test_classifier_failure_falls_back_to_conversation(engine):
     result = await chat.send_message("s8", "asdkjaskjd")
     assert result["category"] == "conversation"
     assert result["reply"] == "Hi there!"
+
+
+# ---------------------------------------------------------------------- #
+# Single Task Control -- pause/resume/cancel one specific task, distinct
+# from the global worker pause/resume covered above.
+# ---------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_pause_task_by_explicit_id(engine):
+    chat, queue, _ = engine
+    task_id = await queue.enqueue("https://example.com", "goal", None, "")
+    queue._task_pause_events[task_id] = asyncio.Event()
+    queue._task_pause_events[task_id].set()  # running
+
+    chat.llm.complete_json.return_value = {
+        "category": "agent_command",
+        "action": "pause_task",
+        "task_id": task_id,
+    }
+    result = await chat.send_message("s9", f"pause task {task_id}")
+    assert result["reply"] == f"Paused task {task_id}."
+    assert result["meta"]["task_id"] == task_id
+    assert queue._task_pause_events[task_id].is_set() is False
+
+
+@pytest.mark.asyncio
+async def test_pause_task_defaults_to_currently_running_task(engine):
+    chat, queue, _ = engine
+    task_id = await queue.enqueue("https://example.com", "goal", None, "")
+    queue.current_task_id = task_id
+    queue._task_pause_events[task_id] = asyncio.Event()
+    queue._task_pause_events[task_id].set()
+
+    chat.llm.complete_json.return_value = {"category": "agent_command", "action": "pause_task", "task_id": ""}
+    result = await chat.send_message("s10", "pause this task")
+    assert result["reply"] == f"Paused task {task_id}."
+
+
+@pytest.mark.asyncio
+async def test_pause_task_no_running_task(engine):
+    chat, _, _ = engine
+    chat.llm.complete_json.return_value = {"category": "agent_command", "action": "pause_task", "task_id": ""}
+    result = await chat.send_message("s11", "pause this task")
+    assert result["reply"] == "No task is currently running to pause."
+
+
+@pytest.mark.asyncio
+async def test_resume_task_by_explicit_id(engine):
+    chat, queue, _ = engine
+    task_id = await queue.enqueue("https://example.com", "goal", None, "")
+    queue._task_pause_events[task_id] = asyncio.Event()  # cleared = paused
+
+    chat.llm.complete_json.return_value = {
+        "category": "agent_command",
+        "action": "resume_task",
+        "task_id": task_id,
+    }
+    result = await chat.send_message("s12", f"resume task {task_id}")
+    assert result["reply"] == f"Resumed task {task_id}."
+    assert queue._task_pause_events[task_id].is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_by_explicit_id(engine):
+    chat, queue, _ = engine
+    task_id = await queue.enqueue("https://example.com", "goal", None, "")
+
+    chat.llm.complete_json.return_value = {
+        "category": "agent_command",
+        "action": "cancel_task",
+        "task_id": task_id,
+    }
+    result = await chat.send_message("s13", f"cancel task {task_id}")
+    assert result["reply"] == f"Cancelling task {task_id}."
+    assert task_id in queue._cancelled_ids
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_unknown_id(engine):
+    chat, _, _ = engine
+    chat.llm.complete_json.return_value = {
+        "category": "agent_command",
+        "action": "cancel_task",
+        "task_id": "does-not-exist",
+    }
+    result = await chat.send_message("s14", "cancel task does-not-exist")
+    assert result["reply"] == "No task found with id does-not-exist."
+
+
+@pytest.mark.asyncio
+async def test_bare_pause_still_targets_global_worker_not_a_task(engine):
+    """Backward compatibility: plain 'pause'/'resume' (no task named) must
+    keep controlling the global agent/worker, not silently start scoping to
+    whichever task happens to be running."""
+    chat, queue, agent = engine
+    await agent.start()
+    task_id = await queue.enqueue("https://example.com", "goal", None, "")
+    queue.current_task_id = task_id
+
+    chat.llm.complete_json.return_value = {"category": "agent_command", "action": "pause"}
+    result = await chat.send_message("s15", "pause")
+    assert result["reply"] == "Paused."
+    status = await agent.status()
+    assert status["status"] == "paused"

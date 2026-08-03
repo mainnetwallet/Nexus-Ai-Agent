@@ -1,3 +1,40 @@
+# Nexus-Agent (Unreleased) — Single Task Control (pause/resume/cancel one task, everywhere)
+
+Pausing/resuming/cancelling one specific task (not the whole agent) already
+worked from the Dashboard and REST API. Chat and Telegram could only
+pause/resume the entire worker, and neither had a "cancel one task" concept
+at all. This release adds that, reusing the task-queue methods and REST
+endpoints that already existed rather than building a second control path.
+
+## What changed
+
+- Chat: say "pause task", "resume task", or "cancel task" to control
+  whichever task is currently running, or add an id — "pause task
+  <task_id>" — to target a specific one. Plain "pause"/"resume" (no task
+  named) still control the whole agent worker exactly as before.
+- Telegram: `/pause [task_id]`, `/resume [task_id]`, and a new
+  `/cancel [task_id]` command, plus the same phrasing works as free text.
+- Dashboard and REST API (`POST /api/tasks/{id}/pause|resume|cancel`) are
+  unchanged — they already supported this and now share the exact same
+  underlying task-queue logic as Chat and Telegram.
+- Pausing a task stops it after its current step and preserves progress;
+  resuming continues from the next step rather than starting over. This
+  behavior already existed and needed no changes.
+
+## Also fixed
+
+Two pre-existing test bugs found while validating this change, unrelated
+to task control: a vision-request test that didn't set a test API key,
+and a cross-test state leak in the LLM client's rate-limit fallback cache
+that made an unrelated test's outcome depend on run order. Full backend
+suite: 381 passed. Frontend build (`tsc -b && vite build`) is clean.
+
+## Result
+
+- Same single-task pause/resume/cancel behavior is now available from
+  Chat, Telegram, Dashboard, and the REST API — one source of truth
+  (`TaskQueueService`) behind all four.
+
 # Nexus-Agent (Unreleased) — AI Model Manager integration fix
 
 The AI Model Manager (manual switching, smart routing, cross-provider

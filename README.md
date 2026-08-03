@@ -112,6 +112,7 @@ Phase 1 (working, tested backbone) সম্পূর্ণ। **Phase 2 চল�
 | 4 | React Dashboard | ✅ |
 | 5 | WebSocket live updates (tasks, browser, logs, plugins) | ✅ |
 | 6 | Task Scheduler (pause/resume/retry/cancel/priority) | ✅ |
+| 6b | Single Task Control from Chat/Telegram/Dashboard/REST API | ✅ |
 | 7 | Settings page | ✅ |
 | 8 | AI model switching | ✅ |
 | 9 | Chrome Profile Manager | ✅ |
@@ -154,6 +155,13 @@ Phase 1 (working, tested backbone) সম্পূর্ণ। **Phase 2 চল�
 - **MCP Core** — filesystem/terminal/browser/github connector, Chat ও Planner-এর জন্য auto-routing সহ।
 - **Social MCP connectors (X, Discord, Gmail)** — এগুলো কোনো API key/OAuth app বা bot token লাগে না; profile-এর already-logged-in browser session (Identity/Profile Manager যেটা manage করে) reuse করে DOM automation-এর মাধ্যমে কাজ করে। একটা connector কখনো নিজে থেকে username/password টাইপ করবে না — session আনঅথেন্টিকেটেড পেলে শুধু "please log in manually" বলে জানিয়ে দেয়। X-এর `publish_post`/`reply` এবং Gmail-এর `send_email`/`reply` — এই আউটবাউন্ড, irreversible action গুলো `confirm=true` ছাড়া চলবে না: draft আগে ইউজারকে দেখাতে হবে, approve করলে তবেই `confirm=true` দিয়ে আবার call করতে হয়। Status/session/account info দেখতে `GET /api/mcp/social-status`।
 - **Identity & Profile Manager** — প্রতিটা automated identity-র জন্য আলাদা Chrome profile + wallet।
+- **Single Task Control** — নির্দিষ্ট একটা task-কে (পুরো worker না) pause/resume/cancel করা যায় Chat,
+  Telegram, Dashboard আর REST API — এই চারটা জায়গা থেকেই, একই `TaskQueueService.pause_task/resume_task/cancel`
+  ব্যবহার করে। `"pause task"` / `"resume task"` / `"cancel task"` লিখলে যেই task এখন চলছে সেটাকেই ধরে;
+  `"pause task <task_id>"` টাইপ করলে নির্দিষ্ট সেই task-কে। Pause হলে current step-এর পরে থেমে যায় আর
+  resume করলে সেই step থেকেই আবার চলা শুরু হয় — কাজের অগ্রগতি হারায় না। Bare `"pause"`/`"resume"` (কোনো
+  task না বলে) আগের মতোই পুরো agent worker-কে pause/resume করে, behavior অপরিবর্তিত। REST endpoints:
+  `POST /api/tasks/{id}/pause`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/cancel`।
 
 বিস্তারিত জানতে দেখুন `CHANGELOG.md` (প্রতিটা ধাপে কী শিপ হয়েছে) এবং `docs/ARCHITECTURE.md` (WebSocket layer, Task Scheduler, AI Decision Engine-এর data-flow লেভেলের লেখা)।
 
@@ -266,9 +274,13 @@ TELEGRAM_ALLOWED_USER_IDS=আপনার_user_id
 /screenshot   → এই মুহূর্তের screenshot
 /logs         → recent logs
 /pause /resume /stop /restart
+/pause <task_id>    → শুধু ওই নির্দিষ্ট task-কে pause করে (পুরো worker না)
+/resume <task_id>   → শুধু ওই নির্দিষ্ট task-কে resume করে
+/cancel [task_id]   → task_id দিলে সেটাই, না দিলে এখন যেটা চলছে সেটা cancel করে
 /report       → শেষ হওয়া task-এর ফলাফল
 ```
-Normal ভাষায় লিখলেও চলবে, যেমন: `"how's everything doing?"`, `"restart the agent"`।
+Normal ভাষায় লিখলেও চলবে, যেমন: `"how's everything doing?"`, `"restart the agent"`, `"pause task"`,
+`"cancel task <id>"`।
 
 ## Agent সরাসরি Website-এ কী করছে তা Live দেখবেন কিভাবে
 

@@ -192,3 +192,65 @@ async def test_on_free_text_llm_failure_suggests_help(bot_and_state):
     await bot.on_free_text(update, context=MagicMock())
     message.reply_text.assert_awaited_once()
     assert "try /help" in message.reply_text.await_args.args[0]
+
+
+# ---------------------------------------------------------------------- #
+# Single Task Control via Telegram: /pause, /resume, /cancel with an
+# optional task_id argument, plus the equivalent free-form phrasing.
+# ---------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_cmd_pause_no_args_pauses_global_worker(bot_and_state):
+    bot, state = bot_and_state
+    await state.agent.start()
+    update, message = _make_update("/pause")
+    await bot.cmd_pause(update, context=SimpleNamespace(args=[]))
+    message.reply_text.assert_awaited_once_with("Paused.")
+    status = await state.agent.status()
+    assert status["status"] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_cmd_pause_with_task_id_scopes_to_task(bot_and_state):
+    bot, state = bot_and_state
+    task_id = await bot.queue.enqueue("https://example.com", "goal", None, "")
+    bot.queue._task_pause_events[task_id] = asyncio.Event()
+    bot.queue._task_pause_events[task_id].set()
+    bot.chat_engine.llm.complete_json = AsyncMock(
+        return_value={"category": "agent_command", "action": "pause_task", "task_id": task_id}
+    )
+    update, message = _make_update(f"/pause {task_id}")
+    await bot.cmd_pause(update, context=SimpleNamespace(args=[task_id]))
+    message.reply_text.assert_awaited_once_with(f"Paused task {task_id}.")
+    assert bot.queue._task_pause_events[task_id].is_set() is False
+
+
+@pytest.mark.asyncio
+async def test_cmd_cancel_with_task_id(bot_and_state):
+    bot, state = bot_and_state
+    task_id = await bot.queue.enqueue("https://example.com", "goal", None, "")
+    bot.chat_engine.llm.complete_json = AsyncMock(
+        return_value={"category": "agent_command", "action": "cancel_task", "task_id": task_id}
+    )
+    update, message = _make_update(f"/cancel {task_id}")
+    await bot.cmd_cancel(update, context=SimpleNamespace(args=[task_id]))
+    message.reply_text.assert_awaited_once_with(f"Cancelling task {task_id}.")
+    assert task_id in bot.queue._cancelled_ids
+
+
+@pytest.mark.asyncio
+async def test_on_free_text_routes_cancel_task_intent(bot_and_state):
+    bot, state = bot_and_state
+    task_id = await bot.queue.enqueue("https://example.com", "goal", None, "")
+    # bot.llm and bot.chat_engine.llm are the same shared model_manager
+    # singleton, so a single mock with two sequential responses stands in
+    # for: (1) the top-level Telegram intent classification, then (2) the
+    # ChatEngine agent_command classification triggered by _handle_chat_text.
+    bot.llm.complete_json = AsyncMock(
+        side_effect=[
+            {"intent": "cancel_task", "task_id": task_id},
+            {"category": "agent_command", "action": "cancel_task", "task_id": task_id},
+        ]
+    )
+    update, message = _make_update(f"cancel task {task_id}")
+    await bot.on_free_text(update, context=MagicMock())
+    message.reply_text.assert_awaited_once_with(f"Cancelling task {task_id}.")

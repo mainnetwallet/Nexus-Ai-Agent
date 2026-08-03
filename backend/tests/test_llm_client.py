@@ -5,6 +5,30 @@ from backend.config.settings import LLMProvider
 from backend.planner.llm_client import LLMClient
 
 
+@pytest.fixture(autouse=True)
+def _reset_sticky_fallback_cache():
+    """
+    LLMClient._complete() consults a module-level sticky-fallback cache
+    (backend/planner/llm_client.py _sticky_fallback_model) so a provider
+    that just got rate-limited doesn't eat a guaranteed 429 on every
+    subsequent call while cooling down. That cache is process-global and
+    outlives any single LLMClient instance, so a test that causes a
+    fallback model to serve successfully (e.g.
+    test_rate_limited_primary_model_falls_back_and_succeeds) leaves that
+    preference sticking around for whichever test runs next on the same
+    provider -- observed as test_non_rate_limit_error_raises_immediately_
+    without_fallback picking up a leftover "gemini-flash-backup" sticky
+    entry and trying it before "gemini-primary". Clearing it before (and
+    after) every test in this file keeps each test's fallback ordering
+    deterministic and independent of run order.
+    """
+    from backend.planner import llm_client as llm_client_module
+
+    llm_client_module._sticky_fallback_model.clear()
+    yield
+    llm_client_module._sticky_fallback_model.clear()
+
+
 def test_anthropic_text_request_shape(monkeypatch):
     from backend.config import settings as settings_module
 
@@ -19,7 +43,10 @@ def test_anthropic_text_request_shape(monkeypatch):
     assert body["system"] == "sys"
 
 
-def test_anthropic_vision_request_embeds_image():
+def test_anthropic_vision_request_embeds_image(monkeypatch):
+    from backend.config import settings as settings_module
+
+    monkeypatch.setattr(settings_module.settings, "anthropic_api_key", "sk-test")
     client = LLMClient(provider=LLMProvider.ANTHROPIC, model="claude-x")
     _url, _headers, body = client._build_anthropic("claude-x", "sys", "look", 100, ("b64data", "image/png"))
 

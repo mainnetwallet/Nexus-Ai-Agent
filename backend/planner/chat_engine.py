@@ -60,6 +60,8 @@ agent, into a structured intent. Respond with STRICT JSON only, no prose, no mar
   "query": "search text or free-form subject, if relevant, else empty",
   "wallet_label": "wallet label if mentioned, else empty",
   "profile_label": "browser profile name or id if one is mentioned, else empty",
+  "task_id": "the specific task id mentioned (e.g. after 'pause task', 'cancel task', 'resume task'), \
+else empty",
   "skill_action": "learn | confirm | discard | teach_start | teach_finish | teach_cancel | teach_undo | \
 list | enable | disable | delete | correct -- only set when category=skill",
   "skill_name": "name (or partial name) of an existing skill this message refers to, else empty",
@@ -86,10 +88,17 @@ Guidance:
 - "summarize this page" -> category=browser_command action=summarize
 - "take a screenshot" -> category=browser_command action=screenshot
 - "show browser" / "what's on screen" -> category=browser_command action=show
-- "pause" -> category=agent_command action=pause
-- "resume" -> category=agent_command action=resume
+- "pause" (no task named) -> category=agent_command action=pause
+- "resume" (no task named) -> category=agent_command action=resume
 - "stop" -> category=agent_command action=stop
 - "continue the previous task" / "keep going" -> category=agent_command action=continue
+- "pause task" / "pause this task" / "pause the task" / "pause task <id>" -> category=agent_command \
+action=pause_task task_id=<id if one was given, else empty>
+- "resume task" / "resume this task" / "resume task <id>" -> category=agent_command action=resume_task \
+task_id=<id if one was given, else empty>
+- "cancel task" / "cancel this task" / "cancel it" / "cancel task <id>" / "stop this task" (referring to \
+one specific task, not the whole agent) -> category=agent_command action=cancel_task task_id=<id if one \
+was given, else empty>
 - "check my current task" / "what's the status" -> category=system_request action=current_task
 - "explain why you failed" / "why did that fail" -> category=system_request action=explain_failure
 - "explain your last action" / "what did you just do" -> category=system_request action=explain_last_action
@@ -246,7 +255,7 @@ class ChatEngine:
             if category == "task" and intent.get("website"):
                 reply, meta = await self._handle_task(session, intent)
             elif category == "agent_command":
-                reply, meta = await self._handle_agent_command(session, action)
+                reply, meta = await self._handle_agent_command(session, action, intent.get("task_id") or "")
             elif category == "browser_command":
                 reply, meta = await self._handle_browser_command(session, action, intent)
             elif category == "system_request":
@@ -280,7 +289,7 @@ class ChatEngine:
         await self._touch_session(session.id, last_task_id=task_id)
         return f"Queued a task on {website}: {goal}\n(task_id={task_id})", {"task_id": task_id}
 
-    async def _handle_agent_command(self, session: ChatSession, action: str) -> tuple[str, dict]:
+    async def _handle_agent_command(self, session: ChatSession, action: str, task_id: str = "") -> tuple[str, dict]:
         agent = getattr(self.app_state, "agent", None) if self.app_state else None
         if action == "pause":
             if agent:
@@ -306,7 +315,58 @@ class ChatEngine:
             return "Started.", {}
         if action == "continue":
             return await self._continue_previous(session)
-        return "Not sure which agent action you mean -- try pause, resume, stop, or continue.", {}
+        # --- Single Task Control: pause/resume/cancel one specific task, ---
+        # --- independent of the global worker/agent state above. Reuses  ---
+        # --- TaskQueueService.pause_task/resume_task/cancel (backend/    ---
+        # --- planner/task_queue.py), the same methods the REST API       ---
+        # --- (backend/api/routes_tasks.py) and Dashboard already use, so ---
+        # --- Chat/Telegram/Dashboard/REST API all share one source of    ---
+        # --- truth for task state.                                      ---
+        if action == "pause_task":
+            return await self._pause_single_task(task_id)
+        if action == "resume_task":
+            return await self._resume_single_task(task_id)
+        if action == "cancel_task":
+            return await self._cancel_single_task(task_id)
+        return (
+            "Not sure which agent action you mean -- try pause, resume, stop, continue, or name a task "
+            "(e.g. 'pause task', 'cancel task <id>').",
+            {},
+        )
+
+    async def _pause_single_task(self, task_id: str) -> tuple[str, dict]:
+        target = task_id or self.queue.current_task_id
+        if not target:
+            return "No task is currently running to pause.", {}
+        ok = self.queue.pause_task(target)
+        if not ok:
+            return f"Task {target} isn't currently running, so it can't be paused.", {}
+        return f"Paused task {target}.", {"task_id": target}
+
+    async def _resume_single_task(self, task_id: str) -> tuple[str, dict]:
+        target = task_id
+        if not target:
+            paused_ids = self.queue.queue_status().get("paused_task_ids") or []
+            target = paused_ids[0] if paused_ids else None
+        if not target:
+            return "No paused task to resume.", {}
+        ok = self.queue.resume_task(target)
+        if not ok:
+            return f"Task {target} isn't currently paused.", {}
+        return f"Resumed task {target}.", {"task_id": target}
+
+    async def _cancel_single_task(self, task_id: str) -> tuple[str, dict]:
+        target = task_id or self.queue.current_task_id
+        if not target:
+            return "No task is currently running to cancel.", {}
+        async with get_session() as db:
+            db_task = await db.get(Task, target)
+        if db_task is None:
+            return f"No task found with id {target}.", {}
+        if db_task.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED):
+            return f"Task {target} already finished ({db_task.status.value}); nothing to cancel.", {}
+        self.queue.cancel(target)
+        return f"Cancelling task {target}.", {"task_id": target}
 
     async def _continue_previous(self, session: ChatSession) -> tuple[str, dict]:
         # Prefer a task that's actually paused right now.
