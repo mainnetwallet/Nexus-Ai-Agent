@@ -251,6 +251,14 @@ class LLMClient:
                     return text
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code != 429:
+                        logger.error(
+                            "Non-rate-limit error on model=%s (provider=%s)%s: HTTP %d: %s",
+                            candidate_model,
+                            self.provider,
+                            f" (after {rate_limit_hits} earlier 429(s) on model={model})" if rate_limit_hits else "",
+                            exc.response.status_code,
+                            exc.response.text[:500],
+                        )
                         raise
                     last_rate_limit_error = exc
                     rate_limit_hits += 1
