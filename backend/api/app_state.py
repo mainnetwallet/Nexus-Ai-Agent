@@ -36,6 +36,7 @@ class AppState:
     mcp: Optional["MCPManager"] = None
     profile_registry: Optional["ProfileRegistry"] = None
     profiles: Optional["ProfileManager"] = None
+    pending_profile: Optional["PendingProfileManager"] = None
 
 
 state = AppState()
