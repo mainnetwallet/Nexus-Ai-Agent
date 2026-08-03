@@ -129,6 +129,19 @@ def _image_to_data_url(image_path: str) -> tuple[str, str]:
     return data, mime_type
 
 
+def _require_api_key(api_key: str, provider_name: str, env_var: str) -> str:
+    """
+    Fails fast with a clear message instead of letting an empty key reach
+    httpx, where it turns into an opaque `Illegal header value b'Bearer '`
+    (or similar) crash that gives no hint about what's actually wrong.
+    """
+    if not api_key or not api_key.strip():
+        raise ValueError(
+            f"{provider_name} API key is missing. Set {env_var} in your .env file."
+        )
+    return api_key
+
+
 class LLMClient:
     """
     Unified client. Each provider is implemented as one "build request"
@@ -356,7 +369,7 @@ class LLMClient:
         return (
             settings.anthropic_base_url,
             {
-                "x-api-key": settings.anthropic_api_key,
+                "x-api-key": _require_api_key(settings.anthropic_api_key, "Anthropic", "ANTHROPIC_API_KEY"),
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
@@ -383,10 +396,10 @@ class LLMClient:
 
         if self.provider == LLMProvider.OPENROUTER:
             url = "https://openrouter.ai/api/v1/chat/completions"
-            api_key = settings.openrouter_api_key
+            api_key = _require_api_key(settings.openrouter_api_key, "OpenRouter", "OPENROUTER_API_KEY")
         else:
             url = settings.openai_base_url
-            api_key = settings.openai_api_key
+            api_key = _require_api_key(settings.openai_api_key, "OpenAI", "OPENAI_API_KEY")
 
         return (
             url,
@@ -422,7 +435,11 @@ class LLMClient:
         else:
             user_content = user_prompt
 
-        api_key = getattr(settings, config.api_key_attr)
+        api_key = _require_api_key(
+            getattr(settings, config.api_key_attr),
+            self.provider.value if hasattr(self.provider, "value") else str(self.provider),
+            config.api_key_attr.upper(),
+        )
         headers = {"Authorization": f"Bearer {api_key}", **config.extra_headers}
 
         return (
@@ -446,21 +463,29 @@ class LLMClient:
         if image:
             data, mime_type = image
             parts.append({"inline_data": {"mime_type": mime_type, "data": data}})
+
+        generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
+
+        # thinkingBudget=0 turns off extended "thinking" on thinking-capable
+        # Gemini models (2.5+/3.x flash & pro). Without this, a small
+        # maxOutputTokens can get entirely consumed by hidden thinking
+        # tokens, leaving finishReason=MAX_TOKENS with no actual output
+        # parts.
+        #
+        # BUT: unlike the base flash/pro tiers, the "-lite" tier does not
+        # accept thinkingConfig at all -- sending it gets rejected outright
+        # with HTTP 400 INVALID_ARGUMENT ("Request contains an invalid
+        # argument"), which previously made every fallback to a lite model
+        # fail unconditionally. So only attach it for non-lite models.
+        if "lite" not in model:
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
         return (
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            {"x-goog-api-key": settings.gemini_api_key},
+            {"x-goog-api-key": _require_api_key(settings.gemini_api_key, "Gemini", "GEMINI_API_KEY")},
             {
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "contents": [{"parts": parts}],
-                # thinkingBudget=0 turns off extended "thinking" on
-                # thinking-capable Gemini models (2.5+/3.x). Without this,
-                # a small maxOutputTokens can get entirely consumed by
-                # hidden thinking tokens, leaving finishReason=MAX_TOKENS
-                # with no actual output parts. Non-thinking models just
-                # ignore this field.
-                "generationConfig": {
-                    "maxOutputTokens": max_tokens,
-                    "thinkingConfig": {"thinkingBudget": 0},
-                },
+                "generationConfig": generation_config,
             },
         )
