@@ -45,7 +45,7 @@ export function Browser() {
     <div className="flex flex-col gap-6">
       <div>
         <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-signal-cyan)]">Live view</p>
-        <h1 className="mt-1 text-2xl font-semibold text-[var(--color-text)]">Browser</h1>
+        <h1 className="mt-1 text-2xl font-semibold text-[var(--color-text)]">Live Browser</h1>
         <p className="mt-1 text-sm text-[var(--color-text-muted)]">
           Read-only observability into whatever page the agent is currently on. No remote control here.
         </p>
