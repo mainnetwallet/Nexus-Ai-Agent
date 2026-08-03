@@ -20,7 +20,7 @@ from backend.config.settings import settings, LLMProvider
 logger = logging.getLogger("nexus.llm")
 
 DEFAULT_MODELS = {
-    LLMProvider.ANTHROPIC: "claude-opus-4-6",
+    LLMProvider.ANTHROPIC: "claude-opus-4-8",
     LLMProvider.OPENAI: "gpt-5.6",
     # "-latest" aliases are managed by Google and hot-swapped to the newest
     # release of that tier automatically (per Gemini's model-naming docs),
