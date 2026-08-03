@@ -778,6 +778,20 @@ class ChatEngine:
         meta = {"connector": result.connector, "tool": result.tool, "ok": result.ok}
         if not result.ok:
             return f"[{result.connector}.{result.tool}] failed: {result.error}", meta
+
+        # When the filesystem connector just wrote a file, surface its path
+        # in meta so the delivery layer (Telegram/Dashboard) can offer the
+        # actual file back to the user instead of just a text confirmation
+        # -- e.g. NexusTelegramBot._handle_chat/_handle_chat_text sends it
+        # as a document when meta["file_path"] is present.
+        if (
+            result.connector == "filesystem"
+            and result.tool == "write_file"
+            and isinstance(result.output, dict)
+            and result.output.get("path")
+        ):
+            meta["file_path"] = result.output["path"]
+
         return f"[{result.connector}.{result.tool}] {result.output}", meta
 
     # ------------------------------------------------------------------ #
