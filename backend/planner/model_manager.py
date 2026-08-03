@@ -83,6 +83,38 @@ _FALLBACK_TRIGGERING_EXCEPTIONS = (
 )
 
 
+def _describe_error(exc: Exception) -> str:
+    """httpx.HTTPStatusError's default str() is just 'Client error 400 for
+    url ...' -- the actually useful part (why: bad model name, malformed
+    field, invalid key, etc.) is in the response body. Pull that out when
+    available so failures are actionable instead of just a status code."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        try:
+            body = exc.response.json()
+            # Most providers nest the message under an "error" key (OpenAI/
+            # Anthropic/OpenRouter shape); Gemini's is a top-level list of
+            # {"error": {...}} objects on some endpoints, a single object
+            # on others -- handle both.
+            if isinstance(body, list) and body:
+                body = body[0]
+            message = None
+            if isinstance(body, dict):
+                err = body.get("error")
+                if isinstance(err, dict):
+                    message = err.get("message")
+                elif isinstance(err, str):
+                    message = err
+                elif "message" in body:
+                    message = body.get("message")
+            if message:
+                return f"HTTP {status}: {message}"[:500]
+        except Exception:  # noqa: BLE001
+            pass
+        return f"HTTP {status}: {exc.response.text[:400]}"
+    return str(exc)[:500]
+
+
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
@@ -441,7 +473,7 @@ class ModelManager:
             )
         except Exception as exc:  # noqa: BLE001
             self.record_failure(provider, exc)
-            return {"provider": provider.value, "ok": False, "error": str(exc)[:500]}
+            return {"provider": provider.value, "ok": False, "error": _describe_error(exc)}
         latency_ms = (time.monotonic() - start) * 1000
         self.record_success(provider, latency_ms)
         return {"provider": provider.value, "ok": True, "latency_ms": round(latency_ms, 1)}
