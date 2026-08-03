@@ -278,7 +278,7 @@ class LLMClient:
         if self.provider == LLMProvider.GEMINI:
             url, headers, body = self._build_gemini(model, system_prompt, user_prompt, max_tokens, image)
             payload = await self._post(url, headers, body)
-            return payload["candidates"][0]["content"]["parts"][0]["text"]
+            return self._extract_gemini_text(payload)
 
         if self.provider in OPENAI_COMPATIBLE_PROVIDERS:
             url, headers, body = self._build_openai_compatible(model, system_prompt, user_prompt, max_tokens, image)
@@ -286,6 +286,28 @@ class LLMClient:
             return payload["choices"][0]["message"]["content"]
 
         raise ValueError(f"Unsupported provider {self.provider}")
+
+    @staticmethod
+    def _extract_gemini_text(payload: dict[str, Any]) -> str:
+        """candidates[0].content.parts can legitimately be missing -- e.g.
+        the model spent its whole token budget "thinking" before writing
+        any output (finishReason=MAX_TOKENS), or the prompt/response got
+        safety-filtered. Surface *why* instead of a bare KeyError('parts')."""
+        candidates = payload.get("candidates") or []
+        if not candidates:
+            block_reason = (payload.get("promptFeedback") or {}).get("blockReason")
+            detail = f" (blocked: {block_reason})" if block_reason else ""
+            raise ValueError(f"Gemini returned no candidates{detail}")
+
+        candidate = candidates[0]
+        parts = (candidate.get("content") or {}).get("parts")
+        if not parts:
+            finish_reason = candidate.get("finishReason", "unknown")
+            raise ValueError(
+                f"Gemini response had no content parts (finishReason={finish_reason}); "
+                "try a higher max_tokens if this is a thinking-capable model"
+            )
+        return "".join(p.get("text", "") for p in parts if "text" in p)
 
     @staticmethod
     async def _post(url: str, headers: dict[str, str], json_body: dict[str, Any]) -> dict[str, Any]:
