@@ -13,7 +13,7 @@ import html as _html
 import logging
 from typing import Any, Optional
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -105,6 +105,22 @@ HELP_KEYBOARD = InlineKeyboardMarkup(
         [InlineKeyboardButton("🩺 Health", callback_data="health"), InlineKeyboardButton("🔧 Diagnostics", callback_data="diagnostics")],
         [InlineKeyboardButton("🖥 Resources", callback_data="resources"), InlineKeyboardButton("❓ Help", callback_data="help")],
     ]
+)
+
+# Persistent reply keyboard shown below the message box at all times (once
+# sent with any message, Telegram keeps it visible for the rest of the
+# chat until replaced). Button taps arrive as plain text messages, so
+# on_free_text() matches them against MAIN_KEYBOARD_ACTIONS below and
+# dispatches directly -- no LLM intent round trip needed for these.
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["⚡ Status", "📋 Tasks"],
+        ["📈 Report", "🌐 Browser"],
+        ["🩺 Health", "🖥 Resources"],
+        ["❓ Help"],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
 )
 
 
@@ -212,11 +228,13 @@ class NexusTelegramBot:
             "or just chat with me — ask questions, say hi, whatever.\n\n"
             "Type /help to see everything I can do.",
             parse_mode=ParseMode.HTML,
+            reply_markup=MAIN_KEYBOARD,
         )
 
     @auth_required
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=HELP_KEYBOARD)
+        await update.message.reply_text("Quick actions are also pinned below the message box. 👇", reply_markup=MAIN_KEYBOARD)
 
     @auth_required
     async def on_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -423,6 +441,26 @@ class NexusTelegramBot:
     # ---------------------------------------------------------------- #
     @auth_required
     async def on_free_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Taps on the persistent reply keyboard (MAIN_KEYBOARD) arrive here
+        # as plain text matching the button label exactly -- handle those
+        # directly, skipping the LLM intent round trip entirely.
+        keyboard_actions = {
+            "⚡ Status": self._text_status,
+            "📋 Tasks": self._text_tasks,
+            "📈 Report": self._text_report,
+            "🌐 Browser": self._text_browser,
+            "🩺 Health": self._text_health,
+            "🖥 Resources": self._text_resources,
+        }
+        label = (update.message.text or "").strip()
+        if label == "❓ Help":
+            await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=HELP_KEYBOARD)
+            return
+        producer = keyboard_actions.get(label)
+        if producer:
+            await update.message.reply_text(await producer(), parse_mode=ParseMode.HTML)
+            return
+
         try:
             intent = await self.llm.complete_json(
                 INTENT_SYSTEM_PROMPT, update.message.text, task_type=TaskType.FAST_RESPONSE
