@@ -53,6 +53,7 @@ from backend.database.session import get_session
 from backend.planner.llm_client import LLMClient
 from backend.planner.model_manager import TaskType
 from backend.planner.model_manager import model_manager as _default_model_manager
+from backend.identity.pending_profile import PendingTask
 
 logger = logging.getLogger("nexus.chat")
 
@@ -344,6 +345,23 @@ class ChatEngine:
             await self._append(session.id, ChatRole.ASSISTANT, reply, category="wallet", meta=meta)
             return {"session_id": session.id, "reply": reply, "category": "wallet", "action": "batch_step", "meta": meta}
 
+        # Pending Chrome Profile selection: intercepted BEFORE intent
+        # classification, same pattern as Teach Mode / tx batch above. Every
+        # browser task from chat needs a persistent Chrome Profile; once one
+        # has been asked for, the next message is read as the answer (a
+        # profile name/id, or "cancel") rather than reclassified from scratch.
+        pending_profile = getattr(self.app_state, "pending_profile", None) if self.app_state else None
+        if pending_profile is not None and pending_profile.is_active(session.id):
+            profiles = getattr(self.app_state, "profiles", None) if self.app_state else None
+            try:
+                reply, meta = await self._handle_pending_profile_turn(session, pending_profile, profiles, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Pending profile selection turn failed")
+                pending_profile.cancel(session.id)
+                reply, meta = f"Something went wrong queuing that: {exc}", {}
+            await self._append(session.id, ChatRole.ASSISTANT, reply, category="task", meta=meta)
+            return {"session_id": session.id, "reply": reply, "category": "task", "action": "select_profile", "meta": meta}
+
         context = await self._conversation_context(session.id)
         classifier_input = self._classifier_prompt(context, text)
         try:
@@ -394,9 +412,7 @@ class ChatEngine:
         goal = intent.get("goal") or "Complete the available task on this site."
         wallet_label = intent.get("wallet_label") or None
         profile_label = intent.get("profile_label") or None
-        task_id = await self.queue.enqueue(website, goal, wallet_label, notes="", priority=1, profile_label=profile_label)
-        await self._touch_session(session.id, last_task_id=task_id)
-        return f"Queued a task on {website}: {goal}\n(task_id={task_id})", {"task_id": task_id}
+        return await self._enqueue_with_profile(session, website, goal, wallet_label, profile_label, notes="", priority=1)
 
     async def _handle_agent_command(self, session: ChatSession, action: str, task_id: str = "") -> tuple[str, dict]:
         agent = getattr(self.app_state, "agent", None) if self.app_state else None
@@ -520,31 +536,31 @@ class ChatEngine:
             website = self._current_website()
             if not website:
                 return "There's no active page to summarize right now -- start a task first.", {}
-            task_id = await self.queue.enqueue(
-                website, "Read the current page and summarize its contents in a few sentences.", None, notes="", priority=2
+            profile_label = intent.get("profile_label") or None
+            return await self._enqueue_with_profile(
+                session, website, "Read the current page and summarize its contents in a few sentences.",
+                None, profile_label, notes="", priority=2,
             )
-            await self._touch_session(session.id, last_task_id=task_id)
-            return f"Queued a summary of {website} (task_id={task_id}). I'll have it shortly.", {"task_id": task_id}
 
         if action == "search":
             query = intent.get("query") or ""
             if not query:
                 return "What would you like me to search for?", {}
-            task_id = await self.queue.enqueue(
-                "https://www.google.com", f"Search for '{query}' and report the top results.", None, notes="", priority=1
+            profile_label = intent.get("profile_label") or None
+            return await self._enqueue_with_profile(
+                session, "https://www.google.com", f"Search for '{query}' and report the top results.",
+                None, profile_label, notes="", priority=1,
             )
-            await self._touch_session(session.id, last_task_id=task_id)
-            return f"Searching for '{query}' (task_id={task_id}).", {"task_id": task_id}
 
         if action == "open":
             website = intent.get("website") or intent.get("query") or ""
             if not website:
                 return "Which site should I open?", {}
-            task_id = await self.queue.enqueue(
-                website, "Open the page and report what's there.", None, notes="", priority=1
+            profile_label = intent.get("profile_label") or None
+            return await self._enqueue_with_profile(
+                session, website, "Open the page and report what's there.",
+                None, profile_label, notes="", priority=1,
             )
-            await self._touch_session(session.id, last_task_id=task_id)
-            return f"Opening {website} (task_id={task_id}).", {"task_id": task_id}
 
         return "Not sure which browser action you mean.", {}
 
@@ -1046,6 +1062,120 @@ class ChatEngine:
         user_prompt = self._history_prompt(context, text)
         reply = await self.llm.complete_text(system_prompt, user_prompt, task_type=TaskType.GENERAL_CHAT)
         return reply.strip() or "..."
+
+    # ------------------------------------------------------------------ #
+    # Chrome Profile enforcement for browser tasks
+    # ------------------------------------------------------------------ #
+    # Every browser task queued from chat (category=task, or a browser_command
+    # that itself queues one -- open/search/summarize) must run against a
+    # named, persistent Chrome Profile (backend/identity/) rather than a
+    # throwaway context. This is the single choke point both paths go
+    # through: it resolves a named profile, auto-picks the one profile if
+    # there's exactly one, asks the user to choose among several (parking
+    # the task via PendingProfileManager until they answer), or tells them
+    # to create one first if none exist yet.
+    async def _enqueue_with_profile(
+        self,
+        session: ChatSession,
+        website: str,
+        goal: str,
+        wallet_label: Optional[str],
+        profile_label: Optional[str],
+        notes: str = "",
+        priority: int = 1,
+    ) -> tuple[str, dict]:
+        profiles = getattr(self.app_state, "profiles", None) if self.app_state else None
+        pending_profile = getattr(self.app_state, "pending_profile", None) if self.app_state else None
+
+        if profiles is None:
+            # Identity & Profile Manager not enabled in this deployment --
+            # fully restores prior behavior rather than blocking every task.
+            task_id = await self.queue.enqueue(website, goal, wallet_label, notes=notes, priority=priority)
+            await self._touch_session(session.id, last_task_id=task_id)
+            return f"Queued a task on {website}: {goal}\n(task_id={task_id})", {"task_id": task_id}
+
+        if profile_label:
+            resolved = await profiles.registry.resolve(profile_label)
+            if resolved is None:
+                return (
+                    f"I don't have a Chrome Profile named '{profile_label}'. "
+                    f"{await self._no_such_profile_hint(profiles)}",
+                    {},
+                )
+            return await self._enqueue_now(session, website, goal, wallet_label, resolved.name, notes, priority)
+
+        available = await profiles.registry.list_profiles(enabled_only=True)
+        if not available:
+            return (
+                "Browser tasks need a Chrome Profile so cookies/login/session state have somewhere "
+                "persistent to live, and you don't have one yet. Create one first (Chrome Profiles page, "
+                "or tell me a name and I'll set one up), then re-send this task.",
+                {},
+            )
+        if len(available) == 1:
+            return await self._enqueue_now(session, website, goal, wallet_label, available[0]["name"], notes, priority)
+
+        if pending_profile is not None:
+            pending_profile.start(session.id, PendingTask(website, goal, wallet_label, notes, priority))
+        names = ", ".join(p["name"] for p in available)
+        return (
+            f"Which Chrome Profile should I use for this task on {website}? Options: {names}. "
+            "(Say 'cancel' to skip it.)",
+            {},
+        )
+
+    async def _enqueue_now(
+        self,
+        session: ChatSession,
+        website: str,
+        goal: str,
+        wallet_label: Optional[str],
+        profile_label: str,
+        notes: str,
+        priority: int,
+    ) -> tuple[str, dict]:
+        task_id = await self.queue.enqueue(
+            website, goal, wallet_label, notes=notes, priority=priority, profile_label=profile_label
+        )
+        await self._touch_session(session.id, last_task_id=task_id)
+        return (
+            f"Queued a task on {website} using Chrome Profile '{profile_label}': {goal}\n(task_id={task_id})",
+            {"task_id": task_id, "profile_label": profile_label},
+        )
+
+    @staticmethod
+    async def _no_such_profile_hint(profiles: Any) -> str:
+        available = await profiles.registry.list_profiles(enabled_only=True)
+        if not available:
+            return "You don't have any Chrome Profiles yet -- create one first."
+        names = ", ".join(p["name"] for p in available)
+        return f"Available profiles: {names}"
+
+    async def _handle_pending_profile_turn(
+        self, session: ChatSession, pending_profile: Any, profiles: Any, text: str
+    ) -> tuple[str, dict]:
+        lowered = text.strip().lower().rstrip(".!")
+        if lowered in ("cancel", "never mind", "nevermind", "stop", "skip"):
+            pending_profile.cancel(session.id)
+            return "Cancelled -- that task wasn't queued.", {}
+
+        pending = pending_profile.get(session.id)
+        if pending is None:
+            return "No task is currently waiting on a profile choice.", {}
+
+        if profiles is None:
+            pending_profile.cancel(session.id)
+            return "The Identity & Profile Manager isn't enabled in this deployment.", {}
+
+        resolved = await profiles.registry.resolve(text.strip())
+        if resolved is None:
+            hint = await self._no_such_profile_hint(profiles)
+            return f"I don't have a Chrome Profile matching '{text.strip()}'. {hint} Or say 'cancel'.", {}
+
+        pending_profile.cancel(session.id)
+        return await self._enqueue_now(
+            session, pending.website, pending.goal, pending.wallet_label, resolved.name, pending.notes, pending.priority
+        )
 
     # ------------------------------------------------------------------ #
     # Helpers
