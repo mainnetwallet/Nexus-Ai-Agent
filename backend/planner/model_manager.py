@@ -441,7 +441,7 @@ class ModelManager:
                     "AI Model Manager: %s served by provider=%s model=%s task_type=%s (%.0f ms)",
                     method_name,
                     attempt_provider.value,
-                    client.model,
+                    client.last_used_model or client.model,
                     task_type.value if task_type else "none",
                     latency_ms,
                 )

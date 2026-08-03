@@ -157,6 +157,12 @@ class LLMClient:
         self.provider = provider or settings.llm_provider
         self.model = model or settings.llm_model_override or DEFAULT_MODELS[self.provider]
         self.vision_model = settings.vision_model_override or DEFAULT_VISION_MODELS[self.provider]
+        # Set by _complete() to whichever candidate model actually served
+        # the last successful request -- self.model stays the *primary*
+        # model even when a FALLBACK_MODELS candidate served it instead,
+        # so callers that want to know what really answered (e.g. for
+        # logging/telemetry) should read this, not self.model.
+        self.last_used_model: str | None = None
 
     # ------------------------------------------------------------------ #
     # Public API (unchanged signatures -- callers are unaffected)
@@ -252,6 +258,7 @@ class LLMClient:
                     )
                 try:
                     text = await self._dispatch(candidate_model, system_prompt, user_prompt, max_tokens, image)
+                    self.last_used_model = candidate_model
                     if rate_limit_hits:
                         logger.info(
                             "Recovered from rate limit: request succeeded on model=%s (provider=%s) "
