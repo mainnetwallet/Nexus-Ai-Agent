@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="")
     openrouter_api_key: str = Field(default="")
     llm_model_override: str = Field(default="")
+    # Override the request URL for Anthropic/OpenAI -- lets these two point
+    # at an OpenAI/Anthropic-compatible gateway (e.g. AgentRouter, Azure,
+    # a self-hosted proxy) instead of the real provider endpoint. Leave
+    # blank to use the real api.anthropic.com / api.openai.com endpoints.
+    anthropic_base_url: str = Field(default="https://api.anthropic.com/v1/messages")
+    openai_base_url: str = Field(default="https://api.openai.com/v1/chat/completions")
 
     # --- LLM: additional provider API keys (AI Model Manager) ---
     xai_api_key: str = Field(default="")
@@ -234,3 +240,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
