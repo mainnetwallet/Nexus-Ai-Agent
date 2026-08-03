@@ -28,7 +28,11 @@ DEFAULT_MODELS = {
     # flash is the default (fast, generous free-tier quota); pro is kept as
     # a fallback for when flash's response quality isn't enough.
     LLMProvider.GEMINI: "gemini-flash-latest",
-    LLMProvider.OPENROUTER: "anthropic/claude-sonnet-4.6",
+    # openrouter/free is OpenRouter's own auto-router across its :free-tier
+    # models (rotates automatically as individual free models get added/
+    # retired), so it needs no billing -- just a free OpenRouter account
+    # and API key. Rate limits apply (see OPENROUTER_API_KEY setup docs).
+    LLMProvider.OPENROUTER: "openrouter/free",
     # --- Free / developer tier ---
     LLMProvider.GROQ: "llama-3.3-70b-versatile",
     LLMProvider.CEREBRAS: "llama-3.3-70b",
@@ -111,7 +115,6 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[LLMProvider, _OpenAICompatConfig] = {
 # DEFAULT_MODELS above), so it's not repeated here.
 FALLBACK_MODELS: dict[LLMProvider, list[str]] = {
     LLMProvider.GEMINI: ["gemini-flash-lite-latest", "gemini-pro-latest"],
-    LLMProvider.OPENROUTER: ["anthropic/claude-sonnet-4.6"],
 }
 
 # Backoff (seconds) between retries of the *same* model before moving on
