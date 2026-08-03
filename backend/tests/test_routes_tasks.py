@@ -76,7 +76,11 @@ async def test_cancel_known_task_requests_cancellation(client):
 
     r = await client.post(f"/api/tasks/{task_id}/cancel")
     assert r.json() == {"id": task_id, "cancel_requested": True}
-    assert task_id in app_state.state.queue._cancelled_ids
+    # Not actually running (no live pause event) -> cancelled directly in the
+    # DB rather than left to linger as "queued" waiting for a worker that will
+    # never pick it up in this test.
+    r = await client.get(f"/api/tasks/{task_id}")
+    assert r.json()["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

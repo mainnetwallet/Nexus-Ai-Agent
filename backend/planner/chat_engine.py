@@ -350,7 +350,7 @@ class ChatEngine:
             target = paused_ids[0] if paused_ids else None
         if not target:
             return "No paused task to resume.", {}
-        ok = self.queue.resume_task(target)
+        ok = await self.queue.resume_task(target)
         if not ok:
             return f"Task {target} isn't currently paused.", {}
         return f"Resumed task {target}.", {"task_id": target}
@@ -365,7 +365,7 @@ class ChatEngine:
             return f"No task found with id {target}.", {}
         if db_task.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED):
             return f"Task {target} already finished ({db_task.status.value}); nothing to cancel.", {}
-        self.queue.cancel(target)
+        await self.queue.cancel(target)
         return f"Cancelling task {target}.", {"task_id": target}
 
     async def _continue_previous(self, session: ChatSession) -> tuple[str, dict]:
@@ -374,7 +374,7 @@ class ChatEngine:
         paused_ids = qstatus.get("paused_task_ids") or []
         if paused_ids:
             task_id = paused_ids[0]
-            self.queue.resume_task(task_id)
+            await self.queue.resume_task(task_id)
             return f"Resuming task {task_id}.", {"task_id": task_id}
 
         # Otherwise fall back to retrying this session's last known task, if

@@ -92,7 +92,7 @@ async def test_pause_and_resume_unblock_a_running_task():
     await asyncio.sleep(0.05)
     assert events == ["paused"]
 
-    assert queue.resume_task(task_id) is True
+    assert await queue.resume_task(task_id) is True
     await asyncio.wait_for(waiter, timeout=1)
     assert events == ["paused", "resumed"]
     assert queue.queue_status()["paused_task_ids"] == []
@@ -102,7 +102,7 @@ async def test_pause_and_resume_unblock_a_running_task():
 async def test_pause_resume_are_noop_for_unknown_task():
     queue = make_queue()
     assert queue.pause_task("does-not-exist") is False
-    assert queue.resume_task("does-not-exist") is False
+    assert await queue.resume_task("does-not-exist") is False
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,7 @@ async def test_cancel_unblocks_a_paused_task():
     pause_event.clear()  # already paused
     queue._task_pause_events[task_id] = pause_event
 
-    queue.cancel(task_id)
+    await queue.cancel(task_id)
 
     assert pause_event.is_set()
     assert task_id in queue._cancelled_ids

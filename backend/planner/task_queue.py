@@ -123,13 +123,38 @@ class TaskQueueService:
     def resume(self) -> None:
         self._paused.set()
 
-    def cancel(self, task_id: str) -> None:
+    async def cancel(self, task_id: str) -> bool:
+        """
+        Cancel a task. If it's actively running/paused in *this* process,
+        flip the in-memory flag (and unblock it if paused) so the AgentLoop
+        notices on its next should_cancel() check -- the DB row gets set to
+        CANCELLED by _run_task once it unwinds.
+
+        If there's no live event for it -- either it's still QUEUED and
+        hasn't been picked up yet, or it's an orphaned row left in
+        PLANNING/RUNNING/PAUSED by a worker that's no longer around (e.g. a
+        dead coroutine, or a process that restarted before the startup
+        recovery pass ran) -- nothing will ever observe the flag, so cancel
+        it directly in the DB instead of silently no-op'ing.
+        """
         self._cancelled_ids.add(task_id)
-        # If the task is currently paused, unblock it so the loop can observe
-        # should_cancel() and stop, instead of hanging forever waiting to resume.
         event = self._task_pause_events.get(task_id)
         if event is not None:
             event.set()
+            return True
+        async with get_session() as session:
+            task = await session.get(Task, task_id)
+            if task is None:
+                return False
+            if task.status in (
+                TaskStatus.QUEUED,
+                TaskStatus.PLANNING,
+                TaskStatus.RUNNING,
+                TaskStatus.PAUSED,
+            ):
+                task.status = TaskStatus.CANCELLED
+        self._cancelled_ids.discard(task_id)
+        return True
 
     def pause_task(self, task_id: str) -> bool:
         """Pause a single in-flight task. Returns False if it isn't running."""
@@ -139,12 +164,24 @@ class TaskQueueService:
         event.clear()
         return True
 
-    def resume_task(self, task_id: str) -> bool:
-        """Resume a single previously-paused task. Returns False if it isn't running."""
+    async def resume_task(self, task_id: str) -> bool:
+        """
+        Resume a single previously-paused task. If it's still actively
+        waiting in this process, unblock its wait_if_paused() the normal
+        way. If no live event exists for it (an orphaned PAUSED row -- same
+        causes as in cancel() above), requeue it directly so the worker
+        loop picks it back up as a fresh attempt instead of leaving it
+        stuck forever.
+        """
         event = self._task_pause_events.get(task_id)
-        if event is None:
-            return False
-        event.set()
+        if event is not None:
+            event.set()
+            return True
+        async with get_session() as session:
+            task = await session.get(Task, task_id)
+            if task is None or task.status != TaskStatus.PAUSED:
+                return False
+            task.status = TaskStatus.QUEUED
         return True
 
     async def retry(self, task_id: str) -> bool:

@@ -84,7 +84,7 @@ class AgentRuntime:
         await self._update(status=AgentRuntimeStatus.STOPPING)
         current = self.queue.current_task_id
         if current:
-            self.queue.cancel(current)
+            await self.queue.cancel(current)
         self.queue.pause()
         self._process_started_at = None
         await self._update(status=AgentRuntimeStatus.STOPPED, stopped_at=_now())
@@ -106,7 +106,7 @@ class AgentRuntime:
         self.queue.resume()
         current = self.queue.current_task_id
         if current:
-            self.queue.resume_task(current)
+            await self.queue.resume_task(current)
         await self._update(status=AgentRuntimeStatus.RUNNING)
         logger.info("Agent runtime resumed")
         return await self.status()

@@ -7,7 +7,7 @@ import pytest_asyncio
 from sqlalchemy import delete
 
 from backend.api import app_state
-from backend.database.models import AgentRuntimeState, Report, Task
+from backend.database.models import AgentRuntimeState, Report, Task, TaskStatus
 from backend.database.session import get_session, init_db
 from backend.planner.agent_runtime import AgentRuntime
 from backend.planner.task_queue import TaskQueueService
@@ -234,7 +234,10 @@ async def test_cmd_cancel_with_task_id(bot_and_state):
     update, message = _make_update(f"/cancel {task_id}")
     await bot.cmd_cancel(update, context=SimpleNamespace(args=[task_id]))
     message.reply_text.assert_awaited_once_with(f"Cancelling task {task_id}.")
-    assert task_id in bot.queue._cancelled_ids
+    # No live pause event for this task -> cancelled directly in the DB.
+    async with get_session() as session:
+        db_task = await session.get(Task, task_id)
+        assert db_task.status == TaskStatus.CANCELLED
 
 
 @pytest.mark.asyncio

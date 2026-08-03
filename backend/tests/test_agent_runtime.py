@@ -137,7 +137,12 @@ async def test_stop_cancels_the_in_flight_task():
 
     await runtime.stop()
 
-    assert task_id in queue._cancelled_ids
+    # No live pause event was set up for this task (it was never actually
+    # picked up by _run_task), so cancel() resolves it directly in the DB
+    # instead of leaving it stuck behind a flag nothing will ever check.
+    async with get_session() as session:
+        db_task = await session.get(Task, task_id)
+        assert db_task.status == TaskStatus.CANCELLED
 
 
 @pytest.mark.asyncio

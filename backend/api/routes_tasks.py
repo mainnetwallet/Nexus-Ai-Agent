@@ -94,11 +94,9 @@ async def get_task(task_id: str):
 
 @router.post("/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    async with get_session() as session:
-        task = await session.get(Task, task_id)
-        if not task:
-            return {"error": "not found"}
-    state.queue.cancel(task_id)
+    ok = await state.queue.cancel(task_id)
+    if not ok:
+        return {"error": "not found"}
     return {"id": task_id, "cancel_requested": True}
 
 
@@ -112,7 +110,7 @@ async def pause_task(task_id: str):
 
 @router.post("/{task_id}/resume")
 async def resume_task(task_id: str):
-    ok = state.queue.resume_task(task_id)
+    ok = await state.queue.resume_task(task_id)
     if not ok:
         return {"error": "task is not currently paused"}
     return {"id": task_id, "paused": False}
