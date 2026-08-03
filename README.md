@@ -120,6 +120,13 @@ Phase 1 (working, tested backbone) সম্পূর্ণ। **Phase 2 চল�
   timeout/rate-limit-এ automatic cross-provider fallback, আর "use Gemini
   for this task only" টাইপ temporary override। দেখুন dashboard-এর
   **AI Models** page অথবা `GET/POST /api/ai-models/*`।
+  এখন এটাই **একমাত্র entry point** সব AI request-এর জন্য — agent loop,
+  decision engine, vision, Teach Mode, Telegram bot, chat, সবকিছু এর
+  মধ্য দিয়ে যায়, তাই manual switching/smart routing/fallback/temporary
+  override সব জায়গায় কাজ করে, শুধু Settings/dashboard থেকে না।
+  `.env`-এ যতগুলো provider-এর key দেওয়া থাকবে, fallback ঠিক ততগুলোর
+  মধ্যেই হবে (১টা key → ওই ১টাই, N টা key → N টার মধ্যে automatic
+  fallback) — কোথাও hardcoded single-provider bypass নেই।
 
 - **AI Decision Engine** — perceive → decide → verify → recover চক্রে চলা আলাদা reasoning module।
 - **Browser Vision + OCR** — canvas-heavy বা image-only পেজে vision-LLM ও Tesseract OCR দিয়ে fallback perception।
@@ -287,7 +294,7 @@ docker compose up --build
 backend/
   api/         REST + WebSocket routes, auth
   browser/     Playwright engine (generic, no site logic) + live session streaming
-  planner/     LLM client + AI Model Manager (multi-provider switching/routing/fallback), agent loop, task queue, autonomous agent runtime
+  planner/     LLM client (single-provider impl) + AI Model Manager (single entry point for every AI request: multi-provider switching/smart routing/cross-provider fallback/temporary overrides), agent loop, task queue, autonomous agent runtime
   memory/      SQLite + ChromaDB store
   vision/      OCR + vision-LLM perception fallback
   wallet/      Non-custodial approval automation
@@ -351,6 +358,10 @@ Pages:
   glance, default/fallback provider pickers, one routing-rule select per
   task type, and a provider table with API-key/health badges, enable/
   disable, "Test Provider Connection", and a one-click temporary override.
+  Every switch/route/fallback/override change made here applies
+  immediately to *every* AI call in the codebase (agent runs, decision
+  engine, vision, Teach Mode, Telegram, chat) — there's no separate
+  "admin-only" copy of the provider selection anymore.
 - **Skills** — browse/search/filter learned skills (`GET /api/skills`),
   inspect a skill's workflow/triggers/version history with one-click
   rollback, duplicate/share/export/delete, a "Learn from text" dialog, and
