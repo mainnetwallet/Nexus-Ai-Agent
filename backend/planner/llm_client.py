@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import mimetypes
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -120,6 +121,35 @@ FALLBACK_MODELS: dict[LLMProvider, list[str]] = {
 # to the next fallback model. Empty = exactly one attempt per model, then
 # straight on to the next fallback on a 429 (no same-model retry delay).
 RATE_LIMIT_RETRY_DELAYS: list[int] = []
+
+# Remembers, per provider, the last fallback model that successfully
+# served a request after the primary model got rate-limited. Once a
+# fallback works, later calls try it *before* re-hitting the primary --
+# otherwise every single call pays for a guaranteed 429 on the still-
+# rate-limited primary before it even gets to the model that actually
+# works. Entries expire after a while so the primary is periodically
+# retried instead of being abandoned forever once its rate limit clears.
+_STICKY_FALLBACK_TTL_SECONDS = 300
+_sticky_fallback_model: dict["LLMProvider", tuple[str, float]] = {}
+
+
+def _get_sticky_fallback(provider: "LLMProvider") -> Optional[str]:
+    entry = _sticky_fallback_model.get(provider)
+    if not entry:
+        return None
+    model_name, recorded_at = entry
+    if time.monotonic() - recorded_at > _STICKY_FALLBACK_TTL_SECONDS:
+        _sticky_fallback_model.pop(provider, None)
+        return None
+    return model_name
+
+
+def _set_sticky_fallback(provider: "LLMProvider", model_name: str) -> None:
+    _sticky_fallback_model[provider] = (model_name, time.monotonic())
+
+
+def _clear_sticky_fallback(provider: "LLMProvider") -> None:
+    _sticky_fallback_model.pop(provider, None)
 
 
 def _image_to_data_url(image_path: str) -> tuple[str, str]:
@@ -233,12 +263,31 @@ class LLMClient:
         backoff between attempts of the same model. Any non-429 error is
         raised immediately without falling back, since a fallback model
         can't fix a bad request or an auth failure.
+
+        Exception: if a fallback model recently served a request
+        successfully after the primary was rate-limited (see
+        _get_sticky_fallback), that model is tried first instead -- no
+        point eating a guaranteed 429 on the primary every single call
+        while it's still cooling down. The primary is still tried right
+        after it, and the sticky preference expires on its own so the
+        primary gets periodically re-checked.
         """
         image = _image_to_data_url(image_path) if image_path else None
 
-        # De-duplicate while preserving order: primary model first, then
-        # its fallbacks (skipping the primary if it's also listed there).
-        candidates = [model] + [m for m in FALLBACK_MODELS.get(self.provider, []) if m != model]
+        # De-duplicate while preserving order. If a fallback model worked
+        # recently (sticky cache), try it first -- it's more likely to
+        # still be healthy than a primary that was just rate-limited.
+        # Otherwise, primary first, then its fallbacks in configured order.
+        fallbacks = [m for m in FALLBACK_MODELS.get(self.provider, []) if m != model]
+        sticky = _get_sticky_fallback(self.provider)
+        if sticky and sticky != model:
+            ordered = [sticky, model] + [m for m in fallbacks if m != sticky]
+        else:
+            ordered = [model] + fallbacks
+        candidates: list[str] = []
+        for m in ordered:
+            if m not in candidates:
+                candidates.append(m)
 
         last_rate_limit_error: Optional[httpx.HTTPStatusError] = None
         rate_limit_hits = 0
@@ -259,6 +308,10 @@ class LLMClient:
                 try:
                     text = await self._dispatch(candidate_model, system_prompt, user_prompt, max_tokens, image)
                     self.last_used_model = candidate_model
+                    if candidate_model == model:
+                        _clear_sticky_fallback(self.provider)
+                    else:
+                        _set_sticky_fallback(self.provider, candidate_model)
                     if rate_limit_hits:
                         logger.info(
                             "Recovered from rate limit: request succeeded on model=%s (provider=%s) "
