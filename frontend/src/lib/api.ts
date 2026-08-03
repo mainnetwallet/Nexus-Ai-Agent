@@ -745,6 +745,8 @@ export const api = {
       request<{ id: string; paused?: boolean; error?: string }>(`/api/tasks/${id}/resume`, { method: "POST" }),
     retry: (id: string) =>
       request<{ id: string; requeued?: boolean; error?: string }>(`/api/tasks/${id}/retry`, { method: "POST" }),
+    remove: (id: string) =>
+      request<{ id: string; deleted?: boolean; error?: string }>(`/api/tasks/${id}`, { method: "DELETE" }),
     queueStatus: () =>
       request<{ worker_paused: boolean; active_task_id: string | null; paused_task_ids: string[] }>(
         "/api/tasks/queue/status"

@@ -116,6 +116,25 @@ async def resume_task(task_id: str):
     return {"id": task_id, "paused": False}
 
 
+@router.delete("/{task_id}")
+async def delete_task(task_id: str):
+    """
+    Fully remove a task (and its steps/report) from the list -- unlike
+    cancel, which just marks it CANCELLED and leaves it visible. Refuses to
+    delete a task that's still actively in flight in this process (has a
+    live pause event, or is the current running task); cancel it first.
+    """
+    if task_id in state.queue._task_pause_events or task_id == state.queue.current_task_id:
+        return {"error": "task is still in flight -- cancel it first"}
+    async with get_session() as session:
+        task = await session.get(Task, task_id)
+        if not task:
+            return {"error": "not found"}
+        await session.delete(task)
+    state.queue._cancelled_ids.discard(task_id)
+    return {"id": task_id, "deleted": True}
+
+
 @router.post("/{task_id}/retry")
 async def retry_task(task_id: str):
     ok = await state.queue.retry(task_id)

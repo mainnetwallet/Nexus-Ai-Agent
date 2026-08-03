@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react"
-import { Plus, Globe, Wallet2, Pause, Play, X, RotateCcw } from "lucide-react"
+import { Plus, Globe, Wallet2, Pause, Play, X, RotateCcw, Trash2 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -173,6 +173,21 @@ function TaskRow({ task: t, onChanged }: { task: TaskSummary; onChanged: () => v
           {(t.status === "failed" || t.status === "cancelled") && (
             <Button variant="ghost" size="icon" disabled={busy} title="Retry" onClick={() => run(() => api.tasks.retry(t.id))}>
               <RotateCcw className="size-4" />
+            </Button>
+          )}
+          {(t.status === "queued" || t.status === "succeeded" || t.status === "failed" || t.status === "cancelled") && (
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={busy}
+              title="Delete"
+              onClick={() => {
+                if (window.confirm("Delete this task permanently? This can't be undone.")) {
+                  run(() => api.tasks.remove(t.id))
+                }
+              }}
+            >
+              <Trash2 className="size-4" />
             </Button>
           )}
         </div>

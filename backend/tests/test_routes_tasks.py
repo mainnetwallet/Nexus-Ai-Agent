@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -93,6 +95,41 @@ async def test_pause_and_resume_report_not_running_for_queued_task(client):
 
     r = await client.post(f"/api/tasks/{task_id}/resume")
     assert r.json() == {"error": "task is not currently paused"}
+
+
+@pytest.mark.asyncio
+async def test_delete_unknown_task_reports_not_found(client):
+    r = await client.delete("/api/tasks/does-not-exist")
+    assert r.json() == {"error": "not found"}
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_a_finished_task(client):
+    r = await client.post("/api/tasks", json={"website": "https://example.com", "goal": "g", "notes": ""})
+    task_id = r.json()["id"]
+
+    r = await client.delete(f"/api/tasks/{task_id}")
+    assert r.json() == {"id": task_id, "deleted": True}
+
+    r = await client.get(f"/api/tasks/{task_id}")
+    assert r.json() == {"error": "not found"}
+
+    r = await client.get("/api/tasks")
+    assert all(t["id"] != task_id for t in r.json())
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_a_task_in_flight(client):
+    r = await client.post("/api/tasks", json={"website": "https://example.com", "goal": "g", "notes": ""})
+    task_id = r.json()["id"]
+    # Simulate what _run_task wires up for an actively-executing task.
+    app_state.state.queue._task_pause_events[task_id] = asyncio.Event()
+
+    r = await client.delete(f"/api/tasks/{task_id}")
+    assert r.json() == {"error": "task is still in flight -- cancel it first"}
+
+    r = await client.get(f"/api/tasks/{task_id}")
+    assert r.json()["status"] == "queued"
 
 
 @pytest.mark.asyncio
