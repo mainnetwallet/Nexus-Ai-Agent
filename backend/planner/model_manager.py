@@ -436,7 +436,9 @@ class ModelManager:
         client = LLMClient(provider=provider)
         start = time.monotonic()
         try:
-            await client.complete_text("You are a connectivity check.", "Reply with the single word: ok", max_tokens=10)
+            await client.complete_text(
+                "You are a connectivity check.", "Reply with the single word: ok", max_tokens=64
+            )
         except Exception as exc:  # noqa: BLE001
             self.record_failure(provider, exc)
             return {"provider": provider.value, "ok": False, "error": str(exc)[:500]}
