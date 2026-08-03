@@ -308,7 +308,7 @@ class LLMClient:
         else:
             content = user_prompt
         return (
-            "https://api.anthropic.com/v1/messages",
+            settings.anthropic_base_url,
             {
                 "x-api-key": settings.anthropic_api_key,
                 "anthropic-version": "2023-06-01",
@@ -339,7 +339,7 @@ class LLMClient:
             url = "https://openrouter.ai/api/v1/chat/completions"
             api_key = settings.openrouter_api_key
         else:
-            url = "https://api.openai.com/v1/chat/completions"
+            url = settings.openai_base_url
             api_key = settings.openai_api_key
 
         return (
