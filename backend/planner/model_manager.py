@@ -435,7 +435,16 @@ class ModelManager:
                 )
                 continue
             else:
-                self.record_success(attempt_provider, (time.monotonic() - start) * 1000)
+                latency_ms = (time.monotonic() - start) * 1000
+                self.record_success(attempt_provider, latency_ms)
+                logger.info(
+                    "AI Model Manager: %s served by provider=%s model=%s task_type=%s (%.0f ms)",
+                    method_name,
+                    attempt_provider.value,
+                    client.model,
+                    task_type.value if task_type else "none",
+                    latency_ms,
+                )
                 if had_override:
                     self.clear_override()
                 return result
