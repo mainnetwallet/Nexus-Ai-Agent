@@ -25,7 +25,7 @@ const NAV = [
   { to: "/", label: "Home", icon: LayoutDashboard, end: true },
   { to: "/chat", label: "AI Chat", icon: MessageSquare },
   { to: "/agent", label: "Agent", icon: Bot },
-  { to: "/browser", label: "Browser", icon: MonitorPlay },
+  { to: "/browser", label: "Live Browser", icon: MonitorPlay },
   { to: "/tasks", label: "Tasks", icon: ListChecks },
   { to: "/wallets", label: "Wallets", icon: Wallet },
   { to: "/profiles", label: "Profiles", icon: UserCircle },
