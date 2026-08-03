@@ -9,12 +9,20 @@ report / etc.) so the user can type things like "pause the browser" or
 from __future__ import annotations
 
 import functools
+import html as _html
 import logging
 from typing import Any, Optional
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from backend.config.settings import settings
 from backend.planner.chat_engine import ChatEngine
@@ -65,6 +73,41 @@ agent/queue/browser (e.g. "hi", "what can you do?", "explain what a diamond prox
 not a wallet) alongside a start_task message -> also fill in profile_label"""
 
 
+def _esc(value: Any) -> str:
+    """HTML-escape dynamic values before interpolating into an HTML-parse-mode message."""
+    return _html.escape(str(value))
+
+
+HELP_TEXT = (
+    "<b>🤖 Nexus-Agent — Command Center</b>\n\n"
+    "<b>📋 Task</b>\n"
+    "/task &lt;website&gt; | &lt;goal&gt; | &lt;wallet&gt;\n\n"
+    "<b>⚙️ Control</b>\n"
+    "/status  /pause  /resume  /cancel  /stop  /restart\n\n"
+    "<b>📊 Monitoring</b>\n"
+    "/report  /logs  /screenshot  /memory  /tasks  /browser\n\n"
+    "<b>🩺 Diagnostics</b>\n"
+    "/health  /diagnostics  /resources\n\n"
+    "<b>🧠 Skills</b>\n"
+    "/skills [list | learn &lt;desc&gt; | enable | disable | delete | pending | confirm | discard]\n"
+    "/teach [start [name] | &lt;step&gt; | undo | done | cancel]\n\n"
+    "<b>🔌 Connectors</b>\n"
+    "/mcp [list | enable | disable | &lt;query&gt;]\n\n"
+    "<i>Or just type naturally</i> — e.g. \"complete all tasks on https://example.com using Wallet-01\", "
+    "\"how's everything doing?\", \"give me a report\". Anything else gets a normal chat reply.\n\n"
+    "👇 Or tap a quick action:"
+)
+
+HELP_KEYBOARD = InlineKeyboardMarkup(
+    [
+        [InlineKeyboardButton("📊 Status", callback_data="status"), InlineKeyboardButton("📋 Tasks", callback_data="tasks")],
+        [InlineKeyboardButton("📈 Report", callback_data="report"), InlineKeyboardButton("🌐 Browser", callback_data="browser")],
+        [InlineKeyboardButton("🩺 Health", callback_data="health"), InlineKeyboardButton("🔧 Diagnostics", callback_data="diagnostics")],
+        [InlineKeyboardButton("🖥 Resources", callback_data="resources"), InlineKeyboardButton("❓ Help", callback_data="help")],
+    ]
+)
+
+
 def _is_authorized(update: Update) -> bool:
     user = update.effective_user
     if not settings.allowed_telegram_ids:
@@ -88,6 +131,8 @@ def auth_required(handler):
         if not _is_authorized(update):
             if update.message:
                 await update.message.reply_text("Not authorized.")
+            elif update.callback_query:
+                await update.callback_query.answer("Not authorized.", show_alert=True)
             logger.warning(
                 "Unauthorized Telegram access attempt: user_id=%s handler=%s",
                 update.effective_user.id if update.effective_user else "unknown",
@@ -146,6 +191,7 @@ class NexusTelegramBot:
         app.add_handler(CommandHandler("skills", self.cmd_skills))
         app.add_handler(CommandHandler("teach", self.cmd_teach))
         app.add_handler(CommandHandler("mcp", self.cmd_mcp))
+        app.add_handler(CallbackQueryHandler(self.on_button))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_free_text))
 
         self.app = app
@@ -161,33 +207,45 @@ class NexusTelegramBot:
     @auth_required
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
-            "Nexus-Agent online. Send /task <website> | <goal> | <wallet>, describe a task in plain "
-            "words, or just chat with me -- ask questions, say hi, whatever."
+            "👋 <b>Nexus-Agent online.</b>\n"
+            "Send /task &lt;website&gt; | &lt;goal&gt; | &lt;wallet&gt;, describe a task in plain words, "
+            "or just chat with me — ask questions, say hi, whatever.\n\n"
+            "Type /help to see everything I can do.",
+            parse_mode=ParseMode.HTML,
         )
 
     @auth_required
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(
-            "/task <website> | <goal> | <wallet>\n"
-            "/status /pause [task_id] /resume [task_id] /cancel [task_id] /stop /restart\n"
-            "/report /logs /screenshot /memory\n"
-            "/tasks /settings /browser\n"
-            "/health /diagnostics /resources\n"
-            "/skills [list | learn <description> | enable <name> | disable <name> | delete <name> | "
-            "pending | confirm | discard]\n"
-            "/teach [start [name] | <step description> | undo | done | cancel]\n"
-            "/mcp [list | enable <connector> | disable <connector> | <natural-language query>]\n"
-            "Or just type naturally, e.g. 'complete all tasks on https://example.com using Wallet-01', "
-            "'how's everything doing?', 'restart the agent', 'give me a report', "
-            "'learn how to check the gas price on etherscan', 'teach me a skill', "
-            "'read the config file' or 'check github issues on my repo'.\n"
-            "You can also just chat -- ask questions, say hi -- anything that isn't a command "
-            "gets a normal conversational reply."
-        )
+        await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=HELP_KEYBOARD)
+
+    @auth_required
+    async def on_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handles taps on the inline keyboard attached to /help (and any
+        other message reusing HELP_KEYBOARD) -- each button re-runs the
+        matching read-only status/report command so the user doesn't have
+        to type it."""
+        query = update.callback_query
+        await query.answer()
+        action = query.data
+        text_producers = {
+            "status": self._text_status,
+            "tasks": self._text_tasks,
+            "report": self._text_report,
+            "browser": self._text_browser,
+            "health": self._text_health,
+            "diagnostics": self._text_diagnostics,
+            "resources": self._text_resources,
+        }
+        if action == "help":
+            await query.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML, reply_markup=HELP_KEYBOARD)
+            return
+        producer = text_producers.get(action)
+        if producer:
+            await query.message.reply_text(await producer(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(await self._text_status())
+        await update.message.reply_text(await self._text_status(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -264,7 +322,7 @@ class NexusTelegramBot:
 
     @auth_required
     async def cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(await self._text_report())
+        await update.message.reply_text(await self._text_report(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -300,23 +358,23 @@ class NexusTelegramBot:
 
     @auth_required
     async def cmd_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(await self._text_tasks())
+        await update.message.reply_text(await self._text_tasks(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_browser(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(await self._text_browser())
+        await update.message.reply_text(await self._text_browser(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_health(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(await self._text_health())
+        await update.message.reply_text(await self._text_health(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_diagnostics(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(await self._text_diagnostics())
+        await update.message.reply_text(await self._text_diagnostics(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_resources(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(await self._text_resources())
+        await update.message.reply_text(await self._text_resources(), parse_mode=ParseMode.HTML)
 
     @auth_required
     async def cmd_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -395,23 +453,23 @@ class NexusTelegramBot:
         elif kind == "restart":
             await self.cmd_restart(update, context)
         elif kind == "status":
-            await update.message.reply_text(await self._text_status())
+            await update.message.reply_text(await self._text_status(), parse_mode=ParseMode.HTML)
         elif kind == "tasks":
-            await update.message.reply_text(await self._text_tasks())
+            await update.message.reply_text(await self._text_tasks(), parse_mode=ParseMode.HTML)
         elif kind == "report":
-            await update.message.reply_text(await self._text_report())
+            await update.message.reply_text(await self._text_report(), parse_mode=ParseMode.HTML)
         elif kind == "logs":
             await self.cmd_logs(update, context)
         elif kind == "screenshot":
             await self.cmd_screenshot(update, context)
         elif kind == "health":
-            await update.message.reply_text(await self._text_health())
+            await update.message.reply_text(await self._text_health(), parse_mode=ParseMode.HTML)
         elif kind == "diagnostics":
-            await update.message.reply_text(await self._text_diagnostics())
+            await update.message.reply_text(await self._text_diagnostics(), parse_mode=ParseMode.HTML)
         elif kind == "resources":
-            await update.message.reply_text(await self._text_resources())
+            await update.message.reply_text(await self._text_resources(), parse_mode=ParseMode.HTML)
         elif kind == "browser_status":
-            await update.message.reply_text(await self._text_browser())
+            await update.message.reply_text(await self._text_browser(), parse_mode=ParseMode.HTML)
         elif kind == "chat":
             await self._handle_chat(update)
         else:
@@ -450,14 +508,18 @@ class NexusTelegramBot:
     async def _text_status(self) -> str:
         agent = getattr(self.app_state, "agent", None) if self.app_state else None
         if not agent:
-            return "Queue worker running. Use /tasks to see current queue."
+            return "⚙️ Queue worker running. Use /tasks to see current queue."
         s = await agent.status()
+        dot = {"running": "🟢", "paused": "⏸️", "idle": "⚪", "error": "🔴", "stopped": "🔴"}.get(
+            str(s.get("status", "")).lower(), "🔵"
+        )
         lines = [
-            f"status: {s.get('status')}",
-            f"current_task: {s.get('current_task_id') or 'none'}",
-            f"current_action: {s.get('current_action') or '-'}",
-            f"tasks_completed: {s.get('tasks_completed', 0)}  tasks_failed: {s.get('tasks_failed', 0)}",
-            f"uptime: {int(s.get('uptime_seconds', 0))}s",
+            "<b>📊 Agent Status</b>",
+            f"{dot} status: <b>{_esc(s.get('status'))}</b>",
+            f"🧩 current_task: {_esc(s.get('current_task_id') or 'none')}",
+            f"⚡ current_action: {_esc(s.get('current_action') or '-')}",
+            f"✅ completed: {s.get('tasks_completed', 0)}   ❌ failed: {s.get('tasks_failed', 0)}",
+            f"⏱ uptime: {int(s.get('uptime_seconds', 0))}s",
         ]
         return "\n".join(lines)
 
@@ -472,14 +534,22 @@ class NexusTelegramBot:
                 result = await session.execute(select(Task).order_by(Task.created_at.desc()).limit(10))
                 tasks = list(result.scalars().all())
             if not tasks:
-                return "No tasks yet. Use /task <website> | <goal> to queue one."
-            lines = ["Recent tasks:"]
+                return "📋 No tasks yet. Use /task <website> | <goal> to queue one."
+            lines = ["<b>📋 Recent Tasks</b>"]
+            status_dot = {
+                "completed": "✅", "done": "✅", "failed": "❌", "error": "❌",
+                "running": "🟢", "in_progress": "🟢", "paused": "⏸️", "queued": "🕓", "pending": "🕓",
+            }
             for t in tasks:
                 status_val = t.status.value if hasattr(t.status, "value") else t.status
-                lines.append(f"- {t.id[:8]} [{status_val}] {t.website} :: {t.goal[:60]}")
+                dot = status_dot.get(str(status_val).lower(), "⚪")
+                lines.append(
+                    f"{dot} <code>{_esc(t.id[:8])}</code> [{_esc(status_val)}] "
+                    f"{_esc(t.website)} :: {_esc(t.goal[:60])}"
+                )
             return "\n".join(lines)
         except Exception as exc:  # noqa: BLE001
-            return f"Couldn't load tasks: {exc}"
+            return f"⚠️ Couldn't load tasks: {_esc(exc)}"
 
     async def _text_report(self) -> str:
         try:
@@ -488,53 +558,59 @@ class NexusTelegramBot:
 
             reports = await list_all(Report, order_by=Report.created_at.desc(), limit=5)
             if not reports:
-                return "No reports yet."
-            lines = ["Recent reports:"]
+                return "📈 No reports yet."
+            lines = ["<b>📈 Recent Reports</b>"]
             for r in reports:
-                lines.append(f"- {r.task_id[:8]} [{r.status}] {(r.summary or '')[:80]}")
+                dot = "✅" if str(r.status).lower() in ("completed", "done", "success") else (
+                    "❌" if str(r.status).lower() in ("failed", "error") else "⚪"
+                )
+                lines.append(f"{dot} <code>{_esc(r.task_id[:8])}</code> [{_esc(r.status)}] {_esc((r.summary or '')[:80])}")
             return "\n".join(lines)
         except Exception as exc:  # noqa: BLE001
-            return f"Couldn't load reports: {exc}"
+            return f"⚠️ Couldn't load reports: {_esc(exc)}"
 
     async def _text_browser(self) -> str:
         live_session = getattr(self.app_state, "live_session", None) if self.app_state else None
         if not live_session:
-            return "Browser control: use /task to start a goal-driven session."
+            return "🌐 Browser control: use /task to start a goal-driven session."
         browser = live_session.status()
         if not browser.get("active"):
-            return "Browser idle (no active session)."
-        return f"Browser active: {browser.get('title', '')} — {browser.get('url', '')}"
+            return "🌐 Browser idle (no active session)."
+        return f"🌐 <b>Browser active</b>\n{_esc(browser.get('title', ''))} — {_esc(browser.get('url', ''))}"
 
     async def _text_health(self) -> str:
         if not self.app_state:
-            return "Health monitor requires the full app state; not available in this deployment."
+            return "🩺 Health monitor requires the full app state; not available in this deployment."
         from backend.monitoring.health import HealthMonitor
 
         report = await HealthMonitor(self.app_state).check_all()
-        lines = [f"overall: {report.overall}"]
+        overall_dot = "🟢" if str(report.overall).upper() in ("OK", "PASS", "HEALTHY") else "🔴"
+        lines = [f"<b>🩺 Health Report</b>", f"{overall_dot} overall: <b>{_esc(report.overall)}</b>"]
         for c in report.components:
-            lines.append(f"- {c.name}: {c.status} ({c.detail})")
+            dot = "🟢" if str(c.status).upper() in ("OK", "PASS", "HEALTHY") else "🔴"
+            lines.append(f"{dot} {_esc(c.name)}: {_esc(c.status)} ({_esc(c.detail)})")
         return "\n".join(lines)
 
     async def _text_diagnostics(self) -> str:
         if not self.app_state:
-            return "Diagnostics requires the full app state; not available in this deployment."
+            return "🔧 Diagnostics requires the full app state; not available in this deployment."
         from backend.monitoring.diagnostics import DiagnosticsService
 
         report = await DiagnosticsService(self.app_state).run()
-        return report.to_text()
+        return f"<b>🔧 Diagnostics</b>\n<pre>{_esc(report.to_text())}</pre>"
 
     async def _text_resources(self) -> str:
         if not self.app_state:
-            return "Resource monitor requires the full app state; not available in this deployment."
+            return "🖥 Resource monitor requires the full app state; not available in this deployment."
         from backend.monitoring.resources import ResourceMonitor
 
         snap = await ResourceMonitor(self.app_state).async_snapshot()
         lines = [
-            f"cpu: {snap.cpu_percent if snap.cpu_percent is not None else 'n/a'}%",
-            f"process_ram: {snap.process_rss_mb if snap.process_rss_mb is not None else 'n/a'} MB",
-            f"system_ram: {snap.system_memory_percent if snap.system_memory_percent is not None else 'n/a'}%",
-            f"browser_ram: {snap.browser_memory_mb if snap.browser_memory_mb is not None else 'n/a'} MB",
-            f"queue_size: {snap.queue_size}  active_tasks: {snap.active_tasks}",
+            "<b>🖥 Resource Usage</b>",
+            f"🧮 cpu: {snap.cpu_percent if snap.cpu_percent is not None else 'n/a'}%",
+            f"💾 process_ram: {snap.process_rss_mb if snap.process_rss_mb is not None else 'n/a'} MB",
+            f"💾 system_ram: {snap.system_memory_percent if snap.system_memory_percent is not None else 'n/a'}%",
+            f"🌐 browser_ram: {snap.browser_memory_mb if snap.browser_memory_mb is not None else 'n/a'} MB",
+            f"🕓 queue_size: {snap.queue_size}   ▶️ active_tasks: {snap.active_tasks}",
         ]
         return "\n".join(lines)
