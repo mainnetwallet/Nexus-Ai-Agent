@@ -61,9 +61,19 @@ cp .env.example .env
 `.env`-এ `ANTHROPIC_API_KEY` আর `API_AUTH_TOKEN` বসান।
 
 **৩) Install**
+
+Windows (PowerShell):
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+playwright install chrome
+```
+
+Linux / Mac:
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chrome
 ```
@@ -148,7 +158,13 @@ Phase 1 (working, tested backbone) সম্পূর্ণ। **Phase 2 চল�
 cp .env.example .env
 # fill in ANTHROPIC_API_KEY (or another provider), TELEGRAM_BOT_TOKEN, etc.
 
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv
+```
+
+Windows (PowerShell): `.venv\Scripts\activate`
+Linux / Mac: `source .venv/bin/activate`
+
+```bash
 pip install -r requirements.txt
 playwright install chrome
 
