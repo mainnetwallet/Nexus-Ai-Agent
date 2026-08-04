@@ -76,6 +76,42 @@ class NativeTransferResult:
     amount_wei: int
 
 
+@dataclass
+class TokenTransferResult:
+    tx_hash: str
+    chain: str
+    token_address: str
+    from_address: str
+    to_address: str
+    amount_tokens: float
+    amount_raw: int
+    decimals: int
+
+
+# --- Minimal ERC20 ABI encoding, no web3.py Contract dependency needed --- #
+_ERC20_TRANSFER_SELECTOR = "a9059cbb"    # transfer(address,uint256)
+_ERC20_DECIMALS_SELECTOR = "313ce567"    # decimals()
+_ERC20_BALANCE_OF_SELECTOR = "70a08231"  # balanceOf(address)
+
+
+def _encode_address_param(address: str) -> str:
+    return address.lower().removeprefix("0x").rjust(64, "0")
+
+
+def _encode_uint256_param(value: int) -> str:
+    if value < 0:
+        raise HotSignerError("Cannot encode a negative uint256")
+    return format(value, "x").rjust(64, "0")
+
+
+def _erc20_transfer_calldata(to_address: str, amount_raw: int) -> str:
+    return "0x" + _ERC20_TRANSFER_SELECTOR + _encode_address_param(to_address) + _encode_uint256_param(amount_raw)
+
+
+def _erc20_balance_of_calldata(owner_address: str) -> str:
+    return "0x" + _ERC20_BALANCE_OF_SELECTOR + _encode_address_param(owner_address)
+
+
 def _find_loaded_key(address: str) -> Optional[str]:
     """Case-insensitive lookup of a key already loaded into
     settings.hot_signer_keys for this process."""
@@ -550,6 +586,176 @@ class HotSigner:
             amount_native=amount_native,
             amount_wei=amount_wei,
         )
+
+    async def send_token(
+        self,
+        chain_key: str,
+        token_address: str,
+        to_address: str,
+        amount_tokens: float,
+        decimals: Optional[int] = None,
+        wallet_id: Optional[str] = None,
+        from_address: Optional[str] = None,
+    ) -> TokenTransferResult:
+        """
+        Send `amount_tokens` of an ERC20 token at `token_address` to
+        `to_address` on `chain_key`. Same signing/broadcast path as
+        send_native (direct RPC, no approval popup), just with a
+        transfer(address,uint256) call instead of a plain value transfer.
+
+        `decimals` is auto-read from the token contract (decimals()) if not
+        given -- most tokens implement it, but a few non-standard ones
+        don't, in which case pass it explicitly.
+
+        Note: hot_signer_max_native_value only caps native-currency sends.
+        There's no per-token USD cap here (no price oracle wired up), so
+        double-check the amount and token address before sending -- this
+        still has no human approval step.
+        """
+        private_key = _require_enabled(from_address)
+
+        chain = chain_by_key(chain_key)
+        rpc_candidates: list[str]
+        if chain is not None:
+            rpc_candidates = get_rpc_candidates(chain)
+        else:
+            chain, rpc_candidates = await resolve_chain(chain_key)
+            if chain is None:
+                raise HotSignerError(
+                    f"Unsupported chain: {chain_key!r} "
+                    "(not hardcoded and not found in the chain registry)"
+                )
+
+        if not rpc_candidates:
+            raise HotSignerError(f"No usable RPC endpoint found for {chain.key!r}")
+
+        if not token_address or not token_address.lower().startswith("0x") or len(token_address) != 42:
+            raise HotSignerError(f"Invalid token contract address: {token_address!r}")
+
+        if not to_address or not to_address.lower().startswith("0x") or len(to_address) != 42:
+            raise HotSignerError(f"Invalid destination address: {to_address!r}")
+
+        if amount_tokens <= 0:
+            raise HotSignerError("Transfer amount must be positive")
+
+        account = Account.from_key(private_key)
+        from_address = account.address
+
+        if decimals is None:
+            decimals = await self._erc20_decimals(rpc_candidates, token_address)
+
+        amount_raw = round(amount_tokens * (10 ** decimals))
+        if amount_raw <= 0:
+            raise HotSignerError(
+                f"Amount {amount_tokens} rounds to 0 raw units at {decimals} decimals -- too small to send"
+            )
+
+        # Pre-flight balance check -- catches an obviously-doomed send (wrong
+        # token, wrong chain, empty wallet) before burning gas on a revert.
+        balance_hex = await self._rpc_call(
+            rpc_candidates, "eth_call",
+            [{"to": token_address, "data": _erc20_balance_of_calldata(from_address)}, "latest"],
+        )
+        try:
+            token_balance_raw = int(balance_hex, 16)
+        except (TypeError, ValueError):
+            token_balance_raw = None
+        if token_balance_raw is not None and token_balance_raw < amount_raw:
+            have = token_balance_raw / (10 ** decimals)
+            raise HotSignerError(
+                f"Insufficient token balance: have {have}, need {amount_tokens} "
+                f"(token {token_address} on {chain.key})"
+            )
+
+        calldata = _erc20_transfer_calldata(to_address, amount_raw)
+
+        nonce = await self._rpc_call(
+            rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
+        )
+        gas_price = await self._rpc_call(rpc_candidates, "eth_gasPrice", [])
+        gas_limit = await self._estimate_gas_with_fallback(
+            rpc_candidates, from_address, token_address, calldata
+        )
+
+        tx = {
+            "chainId": chain.chain_id_int,
+            "nonce": int(nonce, 16),
+            "to": token_address,
+            "value": 0,
+            "gas": gas_limit,
+            "gasPrice": int(gas_price, 16),
+            "data": calldata,
+        }
+
+        signed = account.sign_transaction(tx)
+        tx_hash = await self._rpc_call(
+            rpc_candidates, "eth_sendRawTransaction", [signed.raw_transaction.hex()]
+        )
+
+        logger.info(
+            "Hot signer sent ERC20 transfer: chain=%s token=%s to=%s amount=%s tx=%s",
+            chain.key, token_address, to_address, amount_tokens, tx_hash,
+        )
+
+        if self._registry is not None:
+            try:
+                await self._registry.record_activity(
+                    wallet_id or from_address,
+                    "hot_signer_token_send",
+                    f"Sent {amount_tokens} of token {token_address} to {to_address} on {chain.display_name}",
+                    metadata={
+                        "chain": chain.key,
+                        "token_address": token_address,
+                        "to": to_address,
+                        "amount_tokens": amount_tokens,
+                        "decimals": decimals,
+                        "tx_hash": tx_hash,
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to record hot signer activity (send itself succeeded)")
+
+        return TokenTransferResult(
+            tx_hash=tx_hash,
+            chain=chain.key,
+            token_address=token_address,
+            from_address=from_address,
+            to_address=to_address,
+            amount_tokens=amount_tokens,
+            amount_raw=amount_raw,
+            decimals=decimals,
+        )
+
+    async def _erc20_decimals(self, rpc_candidates: list[str], token_address: str) -> int:
+        result = await self._rpc_call(
+            rpc_candidates, "eth_call",
+            [{"to": token_address, "data": "0x" + _ERC20_DECIMALS_SELECTOR}, "latest"],
+        )
+        try:
+            return int(result, 16)
+        except (TypeError, ValueError) as exc:
+            raise HotSignerError(
+                f"Could not read decimals() from token {token_address!r} -- "
+                "pass decimals explicitly if this isn't a standard ERC20"
+            ) from exc
+
+    async def _estimate_gas_with_fallback(
+        self, rpc_candidates: list[str], from_address: str, to_address: str, calldata: str,
+        fallback: int = 100_000,
+    ) -> int:
+        """eth_estimateGas with a generous safety margin, falling back to a
+        flat default if the node can't/won't estimate (some public RPCs
+        restrict or flake on this call)."""
+        try:
+            estimate_hex = await self._rpc_call(
+                rpc_candidates, "eth_estimateGas",
+                [{"from": from_address, "to": to_address, "data": calldata}],
+            )
+            estimate = int(estimate_hex, 16)
+            return max(int(estimate * 1.2), estimate + 10_000)
+        except Exception:
+            logger.warning("eth_estimateGas failed for token transfer, using flat fallback of %d", fallback)
+            return fallback
 
     @staticmethod
     async def _rpc_call(rpc_candidates: list[str], method: str, params: list) -> str:

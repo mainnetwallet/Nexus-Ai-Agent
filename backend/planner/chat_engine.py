@@ -144,7 +144,7 @@ huggingface, mistral, grok, kimi, qwen, glm...), only set when category=ai_model
   "ai_task_type": "coding | browser_automation | planning | vision | long_context | fast_response | \
 general_chat | research | reasoning | low_cost -- only set when category=ai_model action=set_routing_rule",
   "wallet_action": "batch_start | list | import | delete | rename | select | balance | groups_list | \
-network_switch | send_native -- only set when category=wallet",
+network_switch | send_native | send_token -- only set when category=wallet",
   "tx_count": "integer number of transactions/payments the user wants queued in a batch (e.g. from \"10 ta \
 transaction koro\" / \"queue 10 transactions\" / \"do 5 payments\"), only set when category=wallet \
 wallet_action=batch_start, else empty",
@@ -156,10 +156,14 @@ before you ever see it, so you will not be asked to classify a message like that
   "wallet_address": "a wallet address, only set when wallet_action=import and wallet_import_method=address",
   "wallet_network": "the target network name, only set when wallet_action=network_switch",
   "send_chain": "the chain/network name (ethereum | polygon | arbitrum | optimism | base | bsc), only set \
-when wallet_action=send_native",
-  "send_to_address": "the 0x destination address, only set when wallet_action=send_native",
-  "send_amount": "the numeric native-token amount to send as a plain string (e.g. \"0.05\"), only set when \
-wallet_action=send_native",
+when wallet_action=send_native or wallet_action=send_token",
+  "send_to_address": "the 0x destination address, only set when wallet_action=send_native or \
+wallet_action=send_token",
+  "send_amount": "the numeric amount to send as a plain string (e.g. \"0.05\"), only set when \
+wallet_action=send_native or wallet_action=send_token",
+  "send_token_address": "the 0x contract address of the ERC20 token to send, only set when \
+wallet_action=send_token. If the user names a token by symbol (e.g. \"USDC\") instead of giving a contract \
+address, leave this empty -- do not guess a contract address.",
   "wallet_save_as_hot_signer": "true, only set when wallet_action=import AND the user explicitly asks for \
 this wallet to also be usable for direct/no-popup sends (e.g. \"hot signer hisebe set koro\", \"eta diye \
 tnx korte parbe\", \"save as hot signer\", \"make this the hot wallet\", \"use this for auto sending\"). \
@@ -277,6 +281,11 @@ on polygon" -> category=wallet wallet_action=send_native send_chain=<chain> send
 send_amount=<amount>. This is a direct hot-signer native transfer (see backend/wallet/hot_signer.py) -- \
 extract chain, address, and amount whenever all three are present, in Bengali/Banglish or English, \
 regardless of phrasing (e.g. "koto token pathate hobe", "send", "transfer", "pathao").
+- "send 10 of token 0xdef... to 0xabc... on base" / "transfer 50 USDC (contract 0xdef...) to 0xabc... on \
+polygon" -> category=wallet wallet_action=send_token send_chain=<chain> send_token_address=0xdef... \
+send_to_address=0xabc... send_amount=<amount>. Only classify as send_token when a 0x contract address for \
+the token is given in the message -- if the user only names a token by symbol (e.g. "send 10 USDC") with \
+no contract address, do NOT set send_token_address to a guess; leave it empty so the app can ask for it.
 - "retry task <id>" / "retry that task" -> category=agent_command action=retry_task task_id=<id if given>
 - "delete task <id>" / "remove task <id> from the list" -> category=agent_command action=delete_task \
 task_id=<id>
@@ -1029,6 +1038,9 @@ class ChatEngine:
         if action == "send_native":
             return await self._handle_send_native(intent)
 
+        if action == "send_token":
+            return await self._handle_send_token(intent)
+
         tx_batch = getattr(self.app_state, "tx_batch", None) if self.app_state else None
         if tx_batch is None:
             return "Transaction batching isn't enabled in this deployment.", {}
@@ -1100,6 +1112,62 @@ class ChatEngine:
             f"Sent {result.amount_native} native token on {result.chain} to {result.to_address}. "
             f"tx: {result.tx_hash}",
             {"tx_hash": result.tx_hash, "chain": result.chain, "to": result.to_address, "amount": result.amount_native},
+        )
+
+    async def _handle_send_token(self, intent: dict) -> tuple[str, dict]:
+        """
+        Direct RPC ERC20 transfer via backend.wallet.hot_signer.HotSigner --
+        same no-approval-popup path as _handle_send_native, just calling
+        transfer(address,uint256) on the token contract.
+        """
+        hot_signer = getattr(self.app_state, "hot_signer", None) if self.app_state else None
+        if hot_signer is None:
+            return "Hot signer isn't wired up in this deployment.", {}
+
+        chain = (intent.get("send_chain") or "").strip().lower()
+        token_address = (intent.get("send_token_address") or "").strip()
+        to_address = (intent.get("send_to_address") or "").strip()
+        amount_raw = (intent.get("send_amount") or "").strip()
+
+        if not chain or not token_address or not to_address or not amount_raw:
+            missing = []
+            if not chain:
+                missing.append("chain")
+            if not token_address:
+                missing.append("token contract address")
+            if not to_address:
+                missing.append("destination address")
+            if not amount_raw:
+                missing.append("amount")
+            return (
+                f"I need the {', '.join(missing)} to send this token -- give me all of it "
+                "(e.g. \"send 10 of token 0xtoken... to 0xabc... on base\"). I need the token's "
+                "contract address, not just its symbol -- I won't guess one.",
+                {},
+            )
+
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            return f"'{amount_raw}' isn't a valid amount.", {}
+
+        try:
+            result = await hot_signer.send_token(chain, token_address, to_address, amount)
+        except HotSignerDisabled as exc:
+            return str(exc), {}
+        except HotSignerError as exc:
+            return f"Send failed: {exc}", {}
+
+        return (
+            f"Sent {result.amount_tokens} of token {result.token_address} on {result.chain} to "
+            f"{result.to_address}. tx: {result.tx_hash}",
+            {
+                "tx_hash": result.tx_hash,
+                "chain": result.chain,
+                "token_address": result.token_address,
+                "to": result.to_address,
+                "amount": result.amount_tokens,
+            },
         )
 
     async def _handle_batch_turn(self, session: ChatSession, tx_batch: Any, text: str) -> tuple[str, dict]:

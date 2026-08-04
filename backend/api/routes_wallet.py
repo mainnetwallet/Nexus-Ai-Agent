@@ -98,6 +98,22 @@ class SendNativeRequest(BaseModel):
     )
 
 
+class SendTokenRequest(BaseModel):
+    chain: str
+    token_address: str
+    to_address: str
+    amount: float
+    decimals: Optional[int] = Field(
+        default=None, description="Token decimals. Auto-read from the contract's decimals() if omitted."
+    )
+    wallet_id: Optional[str] = None
+    from_address: Optional[str] = Field(
+        default=None,
+        description="Which loaded hot signer key to sign with (see GET /hot-signer/list). "
+        "Omit to use whichever signer is currently active.",
+    )
+
+
 class SetActiveHotSignerRequest(BaseModel):
     address: str
 
@@ -268,6 +284,36 @@ async def hot_signer_send_native(req: SendNativeRequest):
         "from_address": result.from_address,
         "to_address": result.to_address,
         "amount_native": result.amount_native,
+    }
+
+
+@router.post("/hot-signer/send-token")
+async def hot_signer_send_token(req: SendTokenRequest):
+    """
+    Direct RPC ERC20 token transfer -- same no-approval-popup tradeoff as
+    POST /hot-signer/send, just calling transfer(address,uint256) on the
+    token contract instead of sending native currency.
+    """
+    hot_signer = state.hot_signer
+    if hot_signer is None:
+        raise HTTPException(status_code=503, detail="Hot signer not initialized")
+    try:
+        result = await hot_signer.send_token(
+            req.chain, req.token_address, req.to_address, req.amount,
+            decimals=req.decimals, wallet_id=req.wallet_id, from_address=req.from_address,
+        )
+    except HotSignerDisabled as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except HotSignerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "tx_hash": result.tx_hash,
+        "chain": result.chain,
+        "token_address": result.token_address,
+        "from_address": result.from_address,
+        "to_address": result.to_address,
+        "amount_tokens": result.amount_tokens,
+        "decimals": result.decimals,
     }
 
 
