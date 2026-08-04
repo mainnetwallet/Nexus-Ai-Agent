@@ -440,9 +440,8 @@ function ImportWalletForm({
   onImported: () => void
 }) {
   const toast = useToast()
-  const [method, setMethod] = useState<ImportMethod>("address")
+  const [method, setMethod] = useState<ImportMethod>("private_key")
   const [label, setLabel] = useState("")
-  const [address, setAddress] = useState("")
   const [privateKey, setPrivateKey] = useState("")
   const [seedPhrase, setSeedPhrase] = useState("")
   const [network, setNetwork] = useState("")
@@ -458,7 +457,6 @@ function ImportWalletForm({
       await api.wallets.import({
         label: label.trim(),
         method,
-        address: address.trim() || undefined,
         private_key: privateKey.trim() || undefined,
         seed_phrase: seedPhrase.trim() || undefined,
         network: network || undefined,
@@ -470,7 +468,6 @@ function ImportWalletForm({
       })
       toast.push("Wallet imported", "success")
       setLabel("")
-      setAddress("")
       setPrivateKey("")
       setSeedPhrase("")
       onImported()
@@ -504,20 +501,11 @@ function ImportWalletForm({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="address">Address only</SelectItem>
-              <SelectItem value="browser_profile">Existing browser profile</SelectItem>
               <SelectItem value="private_key">Private key</SelectItem>
               <SelectItem value="seed_phrase">Seed phrase</SelectItem>
             </SelectContent>
           </Select>
         </div>
-
-        {(method === "address" || method === "browser_profile") && (
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="address">Address</Label>
-            <Input id="address" placeholder="0x…" value={address} onChange={(e) => setAddress(e.target.value)} />
-          </div>
-        )}
 
         {method === "private_key" && (
           <div className="flex flex-col gap-1.5">
