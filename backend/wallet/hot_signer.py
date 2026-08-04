@@ -27,15 +27,22 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+from dotenv import set_key
 from eth_account import Account
+from eth_account.hdaccount import Mnemonic
 
-from backend.config.settings import settings
+from backend.config.settings import BASE_DIR, settings
 from backend.wallet.chains import ChainInfo, chain_by_key
 
 logger = logging.getLogger("nexus.wallet.hot_signer")
+
+ENV_PATH = BASE_DIR / ".env"
+
+Account.enable_unaudited_hdwallet_features()
 
 
 class HotSignerError(Exception):
@@ -43,6 +50,10 @@ class HotSignerError(Exception):
 
 
 class HotSignerDisabled(HotSignerError):
+    pass
+
+
+class HotSignerPersistError(HotSignerError):
     pass
 
 
@@ -77,6 +88,78 @@ def get_hot_signer_address() -> Optional[str]:
         return Account.from_key(key).address
     except Exception:
         return None
+
+
+def persist_hot_signer_secret(
+    private_key: Optional[str] = None,
+    seed_phrase: Optional[str] = None,
+    derivation_path: str = "m/44'/60'/0'/0/0",
+) -> str:
+    """
+    Opt-in escape hatch, deliberately separate from
+    backend/wallet/import_utils.py's derive-then-discard rule: takes a
+    private key OR seed phrase, derives its address, and writes the raw
+    private key hex into .env as HOT_SIGNER_PRIVATE_KEY (plus
+    HOT_SIGNER_ENABLED=true), then updates the in-memory `settings` object
+    so the hot signer is usable immediately, without a process restart.
+
+    This function exists ONLY to back an explicit "save as hot signer"
+    opt-in on the wallet-import flow (REST: ImportWalletRequest.
+    save_as_hot_signer; chat: wallet_save_as_hot_signer). It must never be
+    called implicitly on a plain import. Writing a plaintext key to a file
+    on disk is exactly the tradeoff hot_signer.py's module docstring already
+    describes -- burner/bot wallets only, never a wallet holding real value.
+
+    Returns only the derived address. The key itself is never logged,
+    returned, or passed to WalletRegistry -- callers should log the
+    resulting address via WalletRegistry.record_activity, not this
+    function's input.
+    """
+    if bool(private_key) == bool(seed_phrase):
+        raise HotSignerPersistError("Provide exactly one of private_key or seed_phrase.")
+
+    try:
+        if private_key:
+            key_hex = private_key.strip()
+            account = Account.from_key(key_hex)
+        else:
+            phrase = (seed_phrase or "").strip()
+            if not Mnemonic("english").is_mnemonic_valid(phrase):
+                raise HotSignerPersistError("That does not look like a valid seed phrase.")
+            account = Account.from_mnemonic(phrase, account_path=derivation_path)
+            key_hex = account.key.hex()
+            if not key_hex.startswith("0x"):
+                key_hex = "0x" + key_hex
+    except HotSignerPersistError:
+        raise
+    except Exception as exc:
+        raise HotSignerPersistError("Could not derive an address from that secret.") from exc
+
+    address = account.address
+
+    try:
+        ENV_PATH.touch(exist_ok=True)
+        try:
+            ENV_PATH.chmod(0o600)
+        except OSError:
+            # Best-effort on platforms/filesystems that don't support chmod.
+            pass
+        set_key(str(ENV_PATH), "HOT_SIGNER_PRIVATE_KEY", key_hex, quote_mode="never")
+        set_key(str(ENV_PATH), "HOT_SIGNER_ENABLED", "true", quote_mode="never")
+
+        # Update the live settings object so this takes effect immediately,
+        # without waiting for a process restart to re-read .env.
+        settings.hot_signer_private_key = key_hex
+        settings.hot_signer_enabled = True
+    except OSError as exc:
+        raise HotSignerPersistError(f"Could not write to {ENV_PATH}: {exc}") from exc
+    finally:
+        del key_hex
+
+    logger.info(
+        "Hot signer secret persisted to .env (address=%s); key itself never logged.", address
+    )
+    return address
 
 
 class HotSigner:

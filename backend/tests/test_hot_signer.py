@@ -8,7 +8,9 @@ from backend.wallet.hot_signer import (
     HotSigner,
     HotSignerDisabled,
     HotSignerError,
+    HotSignerPersistError,
     get_hot_signer_address,
+    persist_hot_signer_secret,
 )
 
 # Well-known throwaway test key (Hardhat/Anvil default account #0). Never used
@@ -108,3 +110,70 @@ async def test_send_native_success(monkeypatch):
     assert calls == ["eth_getTransactionCount", "eth_gasPrice", "eth_sendRawTransaction"]
     assert recorded["event_type"] == "hot_signer_native_send"
     assert recorded["metadata"]["tx_hash"] == "0xdeadbeef"
+
+
+# ---------------------------------------------------------------------- #
+# persist_hot_signer_secret
+# ---------------------------------------------------------------------- #
+
+TEST_MNEMONIC = "test test test test test test test test test test test junk"
+
+
+@pytest.fixture
+def _isolated_env_path(tmp_path, monkeypatch):
+    """Points ENV_PATH at a scratch file so these tests never touch the
+    repo's real .env, then restores the module-level constant after."""
+    import backend.wallet.hot_signer as hot_signer_module
+
+    scratch = tmp_path / ".env"
+    monkeypatch.setattr(hot_signer_module, "ENV_PATH", scratch)
+    return scratch
+
+
+def test_persist_requires_exactly_one_secret(_isolated_env_path):
+    with pytest.raises(HotSignerPersistError):
+        persist_hot_signer_secret()
+    with pytest.raises(HotSignerPersistError):
+        persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, seed_phrase=TEST_MNEMONIC)
+
+
+def test_persist_from_private_key_writes_env_and_updates_settings(_isolated_env_path, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    address = persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY)
+
+    assert address == TEST_ADDRESS
+    assert settings.hot_signer_enabled is True
+    assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY.lower()
+
+    contents = _isolated_env_path.read_text()
+    assert "HOT_SIGNER_ENABLED=true" in contents
+    assert "HOT_SIGNER_PRIVATE_KEY=" in contents
+    # The derived address should never appear masquerading as a comment-only
+    # file, but more importantly the key material must actually be there
+    # for the signer to work after restart -- just confirm the file isn't
+    # empty/broken rather than re-asserting the literal secret.
+    assert len(contents.strip()) > 0
+
+
+def test_persist_from_seed_phrase_derives_first_account(_isolated_env_path, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    address = persist_hot_signer_secret(seed_phrase=TEST_MNEMONIC)
+
+    expected = Account.from_mnemonic(TEST_MNEMONIC, account_path="m/44'/60'/0'/0/0").address
+    assert address == expected
+    assert settings.hot_signer_enabled is True
+    assert settings.hot_signer_private_key.startswith("0x")
+
+
+def test_persist_rejects_invalid_seed_phrase(_isolated_env_path):
+    with pytest.raises(HotSignerPersistError):
+        persist_hot_signer_secret(seed_phrase="not a real seed phrase at all")
+
+
+def test_persist_rejects_invalid_private_key(_isolated_env_path):
+    with pytest.raises(HotSignerPersistError):
+        persist_hot_signer_secret(private_key="not-a-key")

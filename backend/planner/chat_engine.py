@@ -158,7 +158,11 @@ before you ever see it, so you will not be asked to classify a message like that
 when wallet_action=send_native",
   "send_to_address": "the 0x destination address, only set when wallet_action=send_native",
   "send_amount": "the numeric native-token amount to send as a plain string (e.g. \"0.05\"), only set when \
-wallet_action=send_native"
+wallet_action=send_native",
+  "wallet_save_as_hot_signer": "true, only set when wallet_action=import AND the user explicitly asks for \
+this wallet to also be usable for direct/no-popup sends (e.g. \"hot signer hisebe set koro\", \"eta diye \
+tnx korte parbe\", \"save as hot signer\", \"make this the hot wallet\", \"use this for auto sending\"). \
+Leave empty/unset otherwise -- this must never be inferred just because the user is importing a wallet."
 }
 
 Guidance:
@@ -254,6 +258,10 @@ secret is NOT in this message) -> category=wallet wallet_action=import wallet_la
 wallet_import_method=seed_phrase|private_key
 - "import wallet X, address 0xabc..." -> category=wallet wallet_action=import wallet_label=X \
 wallet_import_method=address wallet_address=0xabc...
+- "import wallet X with my private key and set it as hot signer" / "add X, eta diye tnx korte parbe" / \
+"make X the hot wallet for auto sends" -> category=wallet wallet_action=import wallet_label=X \
+wallet_import_method=private_key|seed_phrase wallet_save_as_hot_signer=true. The secret itself still \
+never appears in this message (handled separately) -- only the intent to also save it for direct sending.
 - "delete wallet X" / "remove wallet X" -> category=wallet wallet_action=delete wallet_label=X
 - "rename wallet X to Y" -> category=wallet wallet_action=rename wallet_label=X wallet_new_name=Y
 - "use wallet X" / "switch to wallet X" / "make X active" -> category=wallet wallet_action=select \
@@ -1176,14 +1184,28 @@ class ChatEngine:
                 # is intercepted before classification (see
                 # send_message / _looks_like_wallet_secret) so the secret
                 # never reaches the LLM classifier or any other LLM call.
-                self._pending_wallet_import[session.id] = {"label": label, "method": method}
+                save_as_hot_signer = str(intent.get("wallet_save_as_hot_signer") or "").strip().lower() in (
+                    "true", "1", "yes",
+                )
+                self._pending_wallet_import[session.id] = {
+                    "label": label,
+                    "method": method,
+                    "save_as_hot_signer": save_as_hot_signer,
+                }
                 secret_kind = "seed phrase" if method == "seed_phrase" else "private key"
+                hot_signer_note = (
+                    " I'll also save it as your hot signer so I can send from it directly, with no "
+                    "approval popup -- only do this for a burner/bot wallet."
+                    if save_as_hot_signer
+                    else ""
+                )
                 return (
                     f"Ready to import '{label}'. Paste just your {secret_kind} as your next message -- "
                     "nothing else in that message, please. I'll use it only to derive the wallet address "
-                    "(it's never stored or logged), and I'll scrub it out of the chat history right after. "
+                    "(it's never stored or logged), and I'll scrub it out of the chat history right after."
+                    f"{hot_signer_note} "
                     "Say \"cancel\" instead if you'd rather not.",
-                    {"pending": "wallet_secret", "method": method},
+                    {"pending": "wallet_secret", "method": method, "save_as_hot_signer": save_as_hot_signer},
                 )
 
             from backend.wallet.import_utils import WalletImportError
@@ -1292,9 +1314,34 @@ class ChatEngine:
             result = await wallets.import_wallet(label=draft["label"], method=draft["method"], **kwargs)
         except WalletImportError as exc:
             return f"Couldn't import that wallet: {exc}", {}
-        return f"Imported wallet '{draft['label']}' (address derived, secret discarded).", {
-            "wallet_id": result.get("id")
-        }
+
+        reply = f"Imported wallet '{draft['label']}' (address derived, secret discarded)."
+        meta = {"wallet_id": result.get("id")}
+
+        if draft.get("save_as_hot_signer"):
+            # Same in-memory secret from this turn, reused before it goes out
+            # of scope -- never round-tripped through the LLM or stored
+            # anywhere but here and persist_hot_signer_secret's .env write.
+            from backend.wallet.hot_signer import HotSignerPersistError, persist_hot_signer_secret
+
+            try:
+                hot_signer_address = persist_hot_signer_secret(**kwargs)
+            except HotSignerPersistError as exc:
+                reply += f" Hot signer setup failed: {exc}"
+            else:
+                try:
+                    await wallets.record_activity(
+                        result.get("id") or hot_signer_address,
+                        "hot_signer_configured",
+                        f"Wallet '{draft['label']}' saved as hot signer ({hot_signer_address})",
+                        metadata={"address": hot_signer_address},
+                    )
+                except Exception:
+                    pass
+                reply += f" It's also set as your hot signer ({hot_signer_address}) -- I can send from it directly now, no approval popup."
+                meta["hot_signer_address"] = hot_signer_address
+
+        return reply, meta
 
     async def _redact_last_user_message(self, session_id: str) -> None:
         """Overwrites this session's most recent USER chat message with a

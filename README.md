@@ -332,6 +332,25 @@ docker compose up --build
   `HOT_SIGNER_PRIVATE_KEY` in the environment, is never written to the DB or logs,
   and every send still gets recorded to the wallet activity log. Only point this at
   a burner wallet — there is no human-in-the-loop step once it's enabled.
+- **Optional convenience, opt-in only:** the wallet-import flow (REST
+  `POST /api/wallets/import` with `save_as_hot_signer: true`, or telling Chat to
+  "save this as hot signer" / "eta diye tnx korte parbe" while importing by
+  private key or seed phrase) can write `HOT_SIGNER_PRIVATE_KEY` /
+  `HOT_SIGNER_ENABLED=true` straight into `.env` for you
+  (`backend/wallet/hot_signer.py::persist_hot_signer_secret`), so Chat can send
+  from that wallet immediately without a manual `.env` edit or restart. This is
+  **off by default** and does nothing unless you explicitly set the flag.
+  Understand the tradeoff before using it:
+  - Your private key is written to `.env` **in plaintext**. Anyone who can read
+    that file (another local user, a misconfigured backup, a leaked `.env` in a
+    Docker image or git commit) has the key, full stop — there is no encryption
+    at this layer.
+  - The file is chmod'd `0600` on save as a baseline, but that's a floor, not a
+    guarantee: back it up carefully, never commit `.env`, and don't run this on
+    shared/multi-tenant hosts.
+  - This is strictly a **burner/bot wallet** feature. Never opt a wallet holding
+    real value into this — treat any wallet you save this way as fully spent the
+    moment you do it.
 - Set `API_AUTH_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS` before exposing this beyond
   localhost.
 

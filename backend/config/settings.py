@@ -197,6 +197,13 @@ class Settings(BaseSettings):
     # written to the DB/logs) and signs+broadcasts native transfers directly
     # via JSON-RPC -- no human approval popup in the loop. Intended for
     # burner/bot wallets only. See backend/wallet/hot_signer.py docstring.
+    # These two values can also be set by the wallet-import flow itself
+    # (ImportWalletRequest.save_as_hot_signer / chat's
+    # wallet_save_as_hot_signer), via
+    # backend.wallet.hot_signer.persist_hot_signer_secret(), which writes
+    # them into .env in plaintext and updates this Settings instance live.
+    # That write is explicit, opt-in, and documented in README's Security
+    # notes -- it is not something a plain import ever does on its own.
     hot_signer_enabled: bool = Field(default=False, description="Master switch for direct RPC native-transfer signing")
     hot_signer_private_key: str = Field(default="", description="0x-prefixed private key of the burner/hot wallet. Env var only, never persisted to DB.")
     hot_signer_max_native_value: float = Field(default=0.0, description="Max native-token amount per transfer (0 = unlimited). Simple per-tx cap since USD pricing isn't wired up here.")

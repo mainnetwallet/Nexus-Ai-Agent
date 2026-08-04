@@ -4,6 +4,68 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Wallet import: opt-in "save as hot signer" (REST + Chat)
+
+Convenience layer on top of the existing Hot Signer feature (see the entry below).
+Previously, using Hot Signer required manually editing `.env` with
+`HOT_SIGNER_PRIVATE_KEY`/`HOT_SIGNER_ENABLED=true` and restarting. Now the wallet
+import flow itself (REST `POST /api/wallets/import`, or Chat's "import wallet ...
+with my private key/seed phrase") can do that write for you, opt-in, when you
+explicitly ask for it -- the wallet is then immediately usable for Chat/REST
+native sends with no restart. Off by default; a plain import behaves exactly as
+before.
+
+### Added
+- `backend/wallet/hot_signer.py` — `persist_hot_signer_secret(private_key=None,
+  seed_phrase=None)`: derives the address (private key directly, or the first
+  BIP-39 account for a seed phrase), writes `HOT_SIGNER_PRIVATE_KEY` +
+  `HOT_SIGNER_ENABLED=true` into `.env` via `python-dotenv`'s `set_key` (file
+  chmod'd `0600` on write), and updates the live `settings` object so it takes
+  effect without a restart. Returns only the derived address -- the key is never
+  logged, returned, or handed to `WalletRegistry`. New `HotSignerPersistError`.
+- `backend/api/routes_wallet.py` — `ImportWalletRequest.save_as_hot_signer: bool
+  = False`. When true and the import method is `private_key`/`seed_phrase` with a
+  secret supplied, `POST /api/wallets/import` also calls
+  `persist_hot_signer_secret()` after the normal (secret-discarding) wallet
+  import, and records a `hot_signer_configured` activity event (address only).
+  Response gains `hot_signer_address` in that case.
+- `backend/planner/chat_engine.py` — `CLASSIFIER_SYSTEM_PROMPT` gained
+  `wallet_save_as_hot_signer` (only set when the user explicitly asks, e.g.
+  "hot signer hisebe set koro" / "eta diye tnx korte parbe" / "save as hot
+  signer"), threaded through `_pending_wallet_import`'s draft. The secret itself
+  still never reaches the LLM classifier -- `_handle_pending_wallet_secret_turn`
+  calls `persist_hot_signer_secret()` with the same in-memory secret it already
+  uses for `wallets.import_wallet()`, right before that secret goes out of scope.
+- `backend/tests/test_hot_signer.py` — `persist_hot_signer_secret` coverage
+  (private key + seed phrase paths, exactly-one-secret validation, invalid
+  key/phrase rejection, `.env` write + live `settings` update, isolated from the
+  repo's real `.env` via a monkeypatched `ENV_PATH`).
+- `backend/tests/test_routes_wallet_import_hot_signer.py` — REST route coverage:
+  flag off (no-op), flag on (persists + activity log + status endpoint reflects
+  it), flag ignored for `method=address`.
+- `backend/tests/test_chat_engine_hot_signer_import.py` — full chat-flow
+  coverage: import without the flag never touches Hot Signer; import with the
+  flag persists the secret, enables an immediate `send_native` chat turn, and
+  the secret still gets redacted from stored chat history either way.
+
+### Fixed
+- `backend/wallet/import_utils.py` (`derive_from_seed_phrase`) and the new
+  `persist_hot_signer_secret` both call `Mnemonic("english").is_mnemonic_valid
+  (phrase)`. The `Mnemonic.is_mnemonic_valid(phrase)` form previously in
+  `import_utils.py` is an **unbound instance method call on the installed
+  eth-account version** (`is_mnemonic_valid(self, mnemonic)`), so every
+  seed-phrase wallet import was raising `TypeError` at runtime -- a
+  pre-existing bug, now covered by `backend/tests/test_import_utils.py`.
+
+### Notes
+- Writing a private key to `.env` in plaintext is a real file-level risk --
+  README's "Security notes" section spells out the tradeoff (burner/bot wallets
+  only, chmod is a floor not a guarantee, never commit `.env`).
+- Does not change `wallet/manager.py`/`wallet/registry.py`'s existing
+  no-key-material guarantee, or `import_utils.py`'s derive-then-discard
+  contract for a plain import -- this is a strictly additive, explicitly opt-in
+  path that only fires when the caller asks for it.
+
 ## [Unreleased] - Hot Signer: direct RPC native-token transfer from Chat (burner wallets)
 
 New, deliberately separate opt-in path alongside the existing browser-extension

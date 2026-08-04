@@ -8,7 +8,13 @@ from pydantic import BaseModel, Field
 from backend.api.app_state import state
 from backend.api.auth import require_auth
 from backend.config.settings import settings
-from backend.wallet.hot_signer import HotSignerDisabled, HotSignerError, get_hot_signer_address
+from backend.wallet.hot_signer import (
+    HotSignerDisabled,
+    HotSignerError,
+    HotSignerPersistError,
+    get_hot_signer_address,
+    persist_hot_signer_secret,
+)
 from backend.wallet.import_utils import WalletImportError
 from backend.wallet.registry import WalletNotFoundError
 
@@ -45,6 +51,13 @@ class ImportWalletRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     notes: Optional[str] = None
     group_id: Optional[str] = None
+    save_as_hot_signer: bool = Field(
+        default=False,
+        description="Opt-in only. If true and method is private_key/seed_phrase with a secret "
+        "provided, the secret is ALSO persisted to .env as HOT_SIGNER_PRIVATE_KEY (see "
+        "backend/wallet/hot_signer.py) so Chat/REST can immediately send native transfers with "
+        "no approval popup. Burner/bot wallets only -- never a wallet holding real value.",
+    )
 
 
 class UpdateWalletRequest(BaseModel):
@@ -111,10 +124,12 @@ async def import_wallet(req: ImportWalletRequest):
     Import a wallet by seed phrase, private key, browser profile, or address.
     Seed phrases/private keys are used only to derive the checksum address
     (backend/wallet/import_utils.py) and are never written to storage, a log,
-    or the activity history.
+    or the activity history -- UNLESS save_as_hot_signer=True is explicitly
+    set, in which case the secret is additionally persisted to .env for the
+    hot signer (see ImportWalletRequest.save_as_hot_signer above).
     """
     try:
-        return await _registry().import_wallet(
+        result = await _registry().import_wallet(
             label=req.label,
             method=req.method,
             address=req.address,
@@ -128,6 +143,26 @@ async def import_wallet(req: ImportWalletRequest):
         )
     except WalletImportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if req.save_as_hot_signer and req.method in ("private_key", "seed_phrase") and (req.private_key or req.seed_phrase):
+        try:
+            hot_signer_address = persist_hot_signer_secret(
+                private_key=req.private_key, seed_phrase=req.seed_phrase
+            )
+        except HotSignerPersistError as exc:
+            raise HTTPException(status_code=400, detail=f"Wallet imported, but hot signer setup failed: {exc}") from exc
+        try:
+            await _registry().record_activity(
+                result.get("id") or hot_signer_address,
+                "hot_signer_configured",
+                f"Wallet '{req.label}' saved as hot signer ({hot_signer_address})",
+                metadata={"address": hot_signer_address},
+            )
+        except Exception:
+            pass  # best-effort audit log; hot signer setup itself already succeeded
+        result["hot_signer_address"] = hot_signer_address
+
+    return result
 
 
 @router.get("/export")
