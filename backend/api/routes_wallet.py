@@ -309,6 +309,12 @@ async def get_wallet_balance(wallet_id: str, network: Optional[str] = None):
     target_network = network or wallet.network
     if not target_network:
         raise HTTPException(status_code=400, detail="No network specified and wallet has none on file")
+    if target_network == "all_evm":
+        raise HTTPException(
+            status_code=400,
+            detail="This wallet is tagged 'all_evm' (works on every EVM chain, not tied to one) -- "
+            "pass ?network=<chain> explicitly to check a balance, e.g. ?network=base.",
+        )
     try:
         return await _registry().get_balance(wallet.address, target_network)
     except ValueError as exc:

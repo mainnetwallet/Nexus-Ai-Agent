@@ -1248,6 +1248,12 @@ class ChatEngine:
                     return f"Wallet '{target['label']}' has no address on file to check.", {}
                 if not network:
                     return f"Which network should I check the balance on for '{target['label']}'?", {}
+                if network == "all_evm":
+                    return (
+                        f"'{target['label']}' is tagged for all EVM chains, not one -- which chain should "
+                        "I check (e.g. base, ethereum, polygon)?",
+                        {},
+                    )
                 try:
                     balance = await wallets.get_balance(target["address"], network)
                 except (ValueError, RuntimeError) as exc:

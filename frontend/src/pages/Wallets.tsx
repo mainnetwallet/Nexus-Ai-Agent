@@ -191,7 +191,10 @@ function WalletDetails({ wallet, onChanged }: { wallet: WalletMeta; onChanged: (
   const toast = useToast()
   const status = useAsync(() => api.wallets.status(wallet.id), [wallet.id])
   const balance = useAsync(
-    () => (wallet.address && wallet.network ? api.wallets.balance(wallet.id) : Promise.resolve(null)),
+    () =>
+      wallet.address && wallet.network && wallet.network !== "all_evm"
+        ? api.wallets.balance(wallet.id)
+        : Promise.resolve(null),
     [wallet.id]
   )
   const activity = useAsync(() => api.wallets.activity(wallet.id, 20), [wallet.id])
@@ -268,11 +271,13 @@ function WalletDetails({ wallet, onChanged }: { wallet: WalletMeta; onChanged: (
               <Row
                 label="Balance"
                 value={
-                  balance.loading
-                    ? "loading…"
-                    : balance.data
-                      ? `${balance.data.native.toFixed(4)} native`
-                      : "unavailable"
+                  wallet.network === "all_evm"
+                    ? "select a chain to check"
+                    : balance.loading
+                      ? "loading…"
+                      : balance.data
+                        ? `${balance.data.native.toFixed(4)} native`
+                        : "unavailable"
                 }
               />
               {wallet.last_used_at && <Row label="Last used" value={new Date(wallet.last_used_at).toLocaleString()} />}
@@ -540,6 +545,7 @@ function ImportWalletForm({
               <SelectValue placeholder="Unspecified" />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="all_evm">All EVM chains</SelectItem>
               {["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc"].map((n) => (
                 <SelectItem key={n} value={n}>
                   {n}
@@ -547,6 +553,12 @@ function ImportWalletForm({
               ))}
             </SelectContent>
           </Select>
+          {network === "all_evm" && (
+            <p className="text-xs text-[var(--color-text-faint)]">
+              Same address works on every EVM chain — this wallet won't be tied to one network, but the
+              balance panel needs a specific chain, so pick one there when you check it.
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">

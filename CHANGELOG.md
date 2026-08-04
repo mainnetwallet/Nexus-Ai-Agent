@@ -4,6 +4,37 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Wallet Network field: "All EVM chains" option
+
+The Import Wallet dialog's Network dropdown only listed 6 explicit chains. Since
+an EVM address is valid on every EVM chain, added `all_evm` ("All EVM chains") as
+a selectable network value for a wallet's metadata -- it just means the wallet
+isn't tied to one network. Balance lookups still need one concrete chain to query
+an RPC endpoint against, so both the REST route and Chat's balance command now
+give a clear "which chain?" response instead of a confusing 502 when a wallet
+tagged `all_evm` is checked without an explicit `?network=` override.
+
+### Added
+- `frontend/src/pages/Wallets.tsx` — "All EVM chains" option in the import
+  dialog's Network select; balance panel skips the auto-fetch and shows
+  "select a chain to check" for `all_evm`-tagged wallets instead of a failed
+  request.
+- `backend/api/routes_wallet.py` — `GET /{wallet_id}/balance` returns 400 with
+  an explicit "pass ?network=<chain>" message when the resolved network is
+  `all_evm`, instead of letting it fall through to a 502 RPC error.
+- `backend/planner/chat_engine.py` — `_handle_wallet_crud`'s `balance` branch
+  asks which chain to check when the wallet's network is `all_evm`.
+- `backend/tests/test_wallet_all_evm_network.py` — import accepts `all_evm`,
+  balance rejects it with a helpful message, balance succeeds when the caller
+  passes an explicit `?network=` override.
+
+### Notes
+- `all_evm` is a metadata label only -- it is not a real RPC-routable chain key
+  in `backend/wallet/chains.py`/`settings.rpc_endpoints`, so `network_switch`
+  (which goes through the browser extension's `wallet_switchEthereumChain`) was
+  already rejecting it via the existing `chain_by_key` lookup; no change needed
+  there.
+
 ## [Unreleased] - Wallet import: opt-in "save as hot signer" (REST + Chat)
 
 Convenience layer on top of the existing Hot Signer feature (see the entry below).
