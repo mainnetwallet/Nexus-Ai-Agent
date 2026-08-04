@@ -134,6 +134,26 @@ class Settings(BaseSettings):
     sqlite_path: str = Field(default=str(DATA_DIR / "nexus_agent.db"))
     chroma_persist_dir: str = Field(default=str(DATA_DIR / "chroma"))
 
+    # --- Memory Improvements (importance, categories, expiration) ---
+    memory_expiration_enabled: bool = Field(
+        default=True, description="Run the periodic sweep that archives/forgets low-value, stale memories"
+    )
+    memory_expiration_check_interval_hours: int = Field(
+        default=24, description="How often the expiration sweep runs while the backend is up"
+    )
+    memory_expiration_days: int = Field(
+        default=90, description="Age (days) past which a low-importance memory becomes eligible for expiration"
+    )
+    memory_low_importance_threshold: float = Field(
+        default=0.3, description="Effective importance (0-1) below which an aged memory is eligible for expiration"
+    )
+    memory_expire_action: str = Field(
+        default="archive", description="What the expiration sweep does to eligible memories: 'archive' (reversible) or 'forget' (permanent delete)"
+    )
+    memory_duplicate_scan_limit: int = Field(
+        default=500, description="Max number of most-recent active memories inspected per duplicate-detection scan"
+    )
+
     # --- Wallet safety policy ---
     wallet_require_manual_approval: bool = Field(default=True)
     wallet_max_auto_approve_value_usd: float = Field(default=0.0, description="0 = always require manual approval")

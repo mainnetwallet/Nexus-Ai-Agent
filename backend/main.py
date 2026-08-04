@@ -95,6 +95,8 @@ async def lifespan(app: FastAPI):
     logging.getLogger().addHandler(_ws_log_handler)
 
     state.memory = MemoryStore()
+    await state.memory.backfill_legacy_entries()  # one-time: categorize/score pre-upgrade memories
+    state.memory.start()  # background Memory Expiration Policy sweep
     state.wallet = WalletManager()
     state.wallet_registry = WalletRegistry()
     state.tx_batch = TxBatchManager()
@@ -168,6 +170,9 @@ async def lifespan(app: FastAPI):
 
     if state.live_session:
         await state.live_session.stop()
+
+    if state.memory:
+        await state.memory.stop()
 
     if state.plugins:
         await state.plugins.unload_all()

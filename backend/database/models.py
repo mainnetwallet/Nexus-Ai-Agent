@@ -402,18 +402,50 @@ class SkillVersion(Base):
     skill: Mapped[Skill] = relationship(back_populates="versions")
 
 
+class MemoryCategory(str, enum.Enum):
+    """Coarse-grained bucket every MemoryEntry is filed under, surfaced in
+    the Memory dashboard for filtering/analytics. Inferred automatically
+    from `kind`/metadata at write time (see backend/memory/store.py
+    `_infer_category`), but any caller may pass an explicit override."""
+
+    CONVERSATION = "conversation"
+    SKILLS = "skills"
+    BROWSER = "browser"
+    CODING = "coding"
+    PROFILES = "profiles"
+    TASKS = "tasks"
+    GENERAL = "general"
+
+
 class MemoryEntry(Base):
     """
     Structured record mirroring what is embedded into ChromaDB, kept here too
     so the SQL side can be queried/filtered without touching the vector store.
+
+    Extended with lightweight "memory improvements" bookkeeping -- importance
+    scoring inputs, category, soft-archive, expiration, and duplicate-merge
+    tracking -- layered onto the original four columns (kind/website/content/
+    metadata_json/confidence/created_at) without altering their meaning, so
+    rows written by the original store.py are still valid rows here.
     """
 
     __tablename__ = "memory_entries"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    kind: Mapped[str] = mapped_column(String(32))  # workflow, failure, preference, decision
+    kind: Mapped[str] = mapped_column(String(32))  # workflow, failure, preference, decision, mcp_call, ...
     website: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     content: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    # --- Memory Improvements ---
+    category: Mapped[str] = mapped_column(String(32), default=MemoryCategory.GENERAL.value)
+    importance: Mapped[float] = mapped_column(Float, default=0.5)  # base score at write time; see effective score
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # normalized-content hash for dedup
+    access_count: Mapped[int] = mapped_column(default=0)
+    last_accessed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    merged_count: Mapped[int] = mapped_column(default=0)  # how many duplicate entries were folded into this one

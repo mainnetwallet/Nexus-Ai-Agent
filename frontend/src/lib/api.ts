@@ -91,6 +91,60 @@ export interface MemoryResult {
   [key: string]: unknown
 }
 
+// ---------- Memory Improvements ----------
+
+export type MemoryCategory =
+  | "conversation"
+  | "skills"
+  | "browser"
+  | "coding"
+  | "profiles"
+  | "tasks"
+  | "general"
+
+export interface MemoryEntryRecord {
+  id: string
+  kind: string
+  category: MemoryCategory
+  website: string | null
+  content: string
+  metadata: Record<string, unknown>
+  confidence: number
+  importance: number
+  effective_importance: number
+  access_count: number
+  last_accessed_at: string | null
+  archived: boolean
+  archived_at: string | null
+  expires_at: string | null
+  merged_count: number
+  created_at: string | null
+}
+
+export interface MemoryAnalytics {
+  total: number
+  active: number
+  archived: number
+  by_category: Record<string, number>
+  by_kind: Record<string, number>
+  average_importance: number
+  expiring_soon: number
+  duplicate_group_count: number
+  duplicate_entry_count: number
+  top_recalled: { id: string; content: string; access_count: number; category: string }[]
+  most_important: { id: string; content: string; effective_importance: number; category: string }[]
+  growth_last_14_days: Record<string, number>
+}
+
+export interface MemoryListParams {
+  category?: string
+  kind?: string
+  q?: string
+  sort?: "importance" | "recent" | "access"
+  include_archived?: boolean
+  limit?: number
+}
+
 export interface Report {
   id: string
   task_id: string
@@ -760,6 +814,33 @@ export const api = {
       request<{ results: MemoryResult[] }>(
         `/api/memory/search?q=${encodeURIComponent(q)}&top_k=${topK}`
       ),
+
+    // Memory Improvements
+    list: (params?: MemoryListParams) => {
+      const qs = new URLSearchParams(
+        Object.entries(params || {})
+          .filter(([, v]) => v !== undefined && v !== "")
+          .map(([k, v]) => [k, String(v)])
+      ).toString()
+      return request<{ memories: MemoryEntryRecord[] }>(`/api/memory${qs ? `?${qs}` : ""}`)
+    },
+    get: (id: string) => request<MemoryEntryRecord>(`/api/memory/${id}`),
+    analytics: () => request<MemoryAnalytics>("/api/memory/analytics"),
+    archive: (id: string) => request<{ id: string; archived: boolean }>(`/api/memory/${id}/archive`, { method: "POST" }),
+    unarchive: (id: string) =>
+      request<{ id: string; archived: boolean }>(`/api/memory/${id}/unarchive`, { method: "POST" }),
+    forget: (id: string) => request<{ id: string; forgotten: boolean }>(`/api/memory/${id}`, { method: "DELETE" }),
+    bulkArchive: (ids: string[]) =>
+      request<{ archived: number }>("/api/memory/bulk/archive", { method: "POST", body: JSON.stringify({ ids }) }),
+    bulkForget: (ids: string[]) =>
+      request<{ forgotten: number }>("/api/memory/bulk/forget", { method: "POST", body: JSON.stringify({ ids }) }),
+    duplicates: () => request<{ groups: MemoryEntryRecord[][] }>("/api/memory/duplicates"),
+    mergeDuplicates: (ids: string[], keepId?: string) =>
+      request<{ kept_id: string; removed_ids: string[]; entry: MemoryEntryRecord }>(
+        "/api/memory/duplicates/merge",
+        { method: "POST", body: JSON.stringify({ ids, keep_id: keepId }) }
+      ),
+    runExpiration: () => request<{ archived: number; forgotten: number }>("/api/memory/expire/run", { method: "POST" }),
   },
 
   reports: {
