@@ -170,7 +170,17 @@ async def test_retry_rejects_a_still_queued_task(client):
 @pytest.mark.asyncio
 async def test_queue_status_and_pause_resume_roundtrip(client):
     r = await client.get("/api/tasks/queue/status")
-    assert r.json() == {"worker_paused": False, "active_task_id": None, "paused_task_ids": []}
+    body = r.json()
+    assert body["worker_paused"] is False
+    assert body["active_task_id"] is None
+    assert body["paused_task_ids"] == []
+    # Multi-Profile Browser Management: queue_status also reports every
+    # task currently driving a live BrowserEngine (not just the single
+    # "active" one) plus the concurrency cap, so the dashboard can show all
+    # running profiles at once instead of just one.
+    assert body["running_tasks"] == []
+    assert body["concurrency"]["active"] == 0
+    assert body["concurrency"]["max"] >= 1
 
     r = await client.post("/api/tasks/queue/pause")
     assert r.json() == {"worker_paused": True}

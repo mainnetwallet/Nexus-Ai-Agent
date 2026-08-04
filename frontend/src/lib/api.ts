@@ -802,9 +802,13 @@ export const api = {
     remove: (id: string) =>
       request<{ id: string; deleted?: boolean; error?: string }>(`/api/tasks/${id}`, { method: "DELETE" }),
     queueStatus: () =>
-      request<{ worker_paused: boolean; active_task_id: string | null; paused_task_ids: string[] }>(
-        "/api/tasks/queue/status"
-      ),
+      request<{
+        worker_paused: boolean
+        active_task_id: string | null
+        paused_task_ids: string[]
+        running_tasks: { task_id: string; profile_id: string | null; website: string }[]
+        concurrency: { active: number; max: number }
+      }>("/api/tasks/queue/status"),
     pauseQueue: () => request<{ worker_paused: boolean }>("/api/tasks/queue/pause", { method: "POST" }),
     resumeQueue: () => request<{ worker_paused: boolean }>("/api/tasks/queue/resume", { method: "POST" }),
   },

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.database.models import ProfileActivity, ProfileRecord, ProfileStatus
 from backend.database.session import get_session
@@ -33,6 +33,16 @@ class ProfileNotFoundError(LookupError):
 
 
 class ProfileError(ValueError):
+    pass
+
+
+class ProfileBusyError(ProfileError):
+    """Raised when a task tries to load a profile that's already IN_USE by
+    another concurrently-running task. Distinct from ProfileError so callers
+    (backend/planner/task_queue.py) can tell "this profile is temporarily
+    taken -- requeue and try another profile/slot" apart from "this profile
+    reference is invalid/disabled -- fail the task outright"."""
+
     pass
 
 
@@ -156,6 +166,25 @@ class ProfileRegistry:
             if profile:
                 return profile
         return await self.get_by_name(profile_ref)
+
+    async def try_lock(self, profile_id: str) -> bool:
+        """
+        Atomically claims a profile for a task: flips status -> IN_USE only
+        if it isn't already IN_USE, in a single UPDATE ... WHERE statement
+        so two tasks racing to grab the same profile can't both succeed
+        (whichever UPDATE's WHERE clause matches first wins the row; the
+        loser's rowcount is 0). This is what makes "multiple profiles running
+        concurrently, but never the same profile twice at once" safe without
+        an in-process lock that would otherwise serialize the whole worker
+        loop. Returns True if this call acquired the profile.
+        """
+        async with get_session() as session:
+            result = await session.execute(
+                update(ProfileRecord)
+                .where(ProfileRecord.id == profile_id, ProfileRecord.status != ProfileStatus.IN_USE)
+                .values(status=ProfileStatus.IN_USE)
+            )
+            return result.rowcount > 0
 
     async def update_profile(self, profile_id: str, **fields: Any) -> dict[str, Any]:
         allowed = {

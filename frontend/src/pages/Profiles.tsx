@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from "react"
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react"
 import {
   Plus,
   Search,
@@ -42,6 +42,23 @@ const STATUS_VARIANT: Record<ProfileStatus, "neutral" | "amber" | "cyan" | "gree
   error: "red",
 }
 
+// Multi-Profile Browser Management dashboard label: every profile is
+// automatically available for the agent to pick up the moment it's
+// created (no manual "Activate" step), so what the dashboard needs to
+// show per-profile is live status, not which one happens to be "active".
+const STATUS_LABEL: Record<ProfileStatus, "Idle" | "Running" | "Busy" | "Offline"> = {
+  ready: "Idle",
+  in_use: "Running",
+  needs_login: "Busy",
+  disabled: "Offline",
+  error: "Offline",
+}
+
+// Dashboard polls for live status so several profiles that are all running
+// concurrent tasks (different Chrome Profiles, different browser instances)
+// show their state updating in near-real-time without a manual refresh.
+const STATUS_POLL_MS = 4000
+
 function SessionDot({ label, ok }: { label: string; ok: boolean | null }) {
   const color =
     ok === null ? "bg-[var(--color-text-faint)]" : ok ? "bg-[var(--color-signal-green)]" : "bg-[var(--color-signal-red)]"
@@ -55,11 +72,24 @@ function SessionDot({ label, ok }: { label: string; ok: boolean | null }) {
 
 export function Profiles() {
   const profiles = useAsync(() => api.profiles.list(), [])
+  const queueStatus = useAsync(() => api.tasks.queueStatus(), [])
   const [search, setSearch] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const toast = useToast()
+
+  // Live status: several profiles can be Running/Busy at once now that
+  // tasks execute concurrently, so poll instead of relying on a manual
+  // refresh to see them change.
+  useEffect(() => {
+    const id = setInterval(() => {
+      profiles.refetch()
+      queueStatus.refetch()
+    }, STATUS_POLL_MS)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const filtered = useMemo(() => {
     let list = profiles.data ?? []
@@ -107,6 +137,13 @@ export function Profiles() {
             Gmail/X/Discord accounts. Cookies, local storage, and extensions live on disk in the profile's own
             Chrome directory and are never duplicated here.
           </p>
+          {queueStatus.data && (
+            <p className="mt-2 font-mono text-xs text-[var(--color-text-faint)]">
+              {queueStatus.data.concurrency.active} of {queueStatus.data.concurrency.max} concurrent browser
+              slots in use across {queueStatus.data.running_tasks.length} running task
+              {queueStatus.data.running_tasks.length === 1 ? "" : "s"}
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <Dialog open={importOpen} onOpenChange={setImportOpen}>
@@ -156,7 +193,7 @@ export function Profiles() {
 
           <Card>
             <CardContent className="pt-5">
-              {profiles.loading && <p className="text-sm text-[var(--color-text-muted)]">Loading profiles…</p>}
+              {profiles.loading && !profiles.data && <p className="text-sm text-[var(--color-text-muted)]">Loading profiles…</p>}
               {profiles.error && <p className="text-sm text-[var(--color-signal-red)]">{profiles.error}</p>}
               {!profiles.loading && filtered.length === 0 && (
                 <p className="py-6 text-center text-sm text-[var(--color-text-faint)]">
@@ -175,7 +212,6 @@ export function Profiles() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="truncate text-sm font-medium text-[var(--color-text)]">{p.name}</p>
-                        {p.is_active && <Badge variant="cyan">active</Badge>}
                       </div>
                       <p className="truncate font-mono text-xs text-[var(--color-text-faint)]">
                         {p.wallet_label ?? "no wallet linked"}
@@ -187,7 +223,7 @@ export function Profiles() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 text-right">
-                      <Badge variant={STATUS_VARIANT[p.status]}>{p.status.replace("_", " ")}</Badge>
+                      <Badge variant={STATUS_VARIANT[p.status]}>{STATUS_LABEL[p.status]}</Badge>
                     </div>
                   </button>
                 ))}
@@ -221,19 +257,6 @@ function ProfileDetails({
   const [busy, setBusy] = useState(false)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
-
-  async function handleSelectActive() {
-    setBusy(true)
-    try {
-      await api.profiles.select(profile.id)
-      toast.push(`${profile.name} is now the active profile`, "success")
-      onChanged()
-    } catch (err) {
-      toast.push(err instanceof Error ? err.message : "Failed to select profile", "error")
-    } finally {
-      setBusy(false)
-    }
-  }
 
   async function handleToggleEnabled() {
     setBusy(true)
@@ -301,12 +324,14 @@ function ProfileDetails({
         <div className="flex items-center gap-2">
           <UserCircle className="size-4 text-[var(--color-signal-amber)]" />
           <p className="text-sm font-semibold text-[var(--color-text)]">{profile.name}</p>
+          <Badge variant={STATUS_VARIANT[profile.status]}>{STATUS_LABEL[profile.status]}</Badge>
         </div>
+        <p className="-mt-2 text-xs text-[var(--color-text-faint)]">
+          Available to the agent automatically -- no activation needed. It's picked for a task either by name
+          ("use {profile.name}") or auto-selected when a task doesn't specify one.
+        </p>
 
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={handleSelectActive} disabled={busy || profile.is_active || !profile.enabled}>
-            {profile.is_active ? "Active profile" : "Set active"}
-          </Button>
           <Button size="sm" variant="subtle" onClick={handleToggleEnabled} disabled={busy}>
             {profile.enabled ? "Disable" : "Enable"}
           </Button>

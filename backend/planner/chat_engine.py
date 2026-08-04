@@ -53,6 +53,7 @@ from backend.database.session import get_session
 from backend.planner.llm_client import LLMClient
 from backend.planner.model_manager import TaskType
 from backend.planner.model_manager import model_manager as _default_model_manager
+from backend.identity.manager import ProfileManager
 from backend.identity.pending_profile import PendingTask
 
 logger = logging.getLogger("nexus.chat")
@@ -1115,6 +1116,24 @@ class ChatEngine:
         if len(available) == 1:
             return await self._enqueue_now(session, website, goal, wallet_label, available[0]["name"], notes, priority)
 
+        # Multi-Profile Browser Management: no need to stop and ask which
+        # profile to use when several exist -- auto-pick the best available
+        # one (idle over busy/needs-login, matching account for the site's
+        # domain preferred, most-recently-used as a tiebreak) and queue
+        # immediately. The user can still always override by naming a
+        # profile explicitly (handled by the `profile_label` branch above).
+        best = ProfileManager.choose_best_profile(available, website=website)
+        if best is not None:
+            reply, meta = await self._enqueue_now(session, website, goal, wallet_label, best["name"], notes, priority)
+            meta = {**meta, "auto_selected_profile": True}
+            return (
+                f"{reply}\n(Auto-selected Chrome Profile '{best['name']}' out of {len(available)} available -- "
+                "say 'use <profile name>' next time to pick a specific one.)",
+                meta,
+            )
+
+        # Shouldn't normally happen (available is non-empty), but fall back
+        # to asking rather than silently dropping the task if it ever does.
         if pending_profile is not None:
             pending_profile.start(session.id, PendingTask(website, goal, wallet_label, notes, priority))
         names = ", ".join(p["name"] for p in available)

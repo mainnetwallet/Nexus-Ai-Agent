@@ -13,10 +13,11 @@ from typing import Optional
 from sqlalchemy import select
 
 from backend.browser.engine import BrowserEngine
+from backend.config.settings import settings
 from backend.database.models import Report, Task, TaskStatus, TaskStep
 from backend.database.session import get_session
 from backend.identity.manager import ProfileManager
-from backend.identity.registry import ProfileError, ProfileNotFoundError
+from backend.identity.registry import ProfileBusyError, ProfileError, ProfileNotFoundError
 from backend.memory.store import MemoryStore
 from backend.planner.agent_loop import AgentLoop
 from backend.skills.library import SkillService
@@ -38,6 +39,7 @@ class TaskQueueService:
         skills: Optional[SkillService] = None,
         mcp=None,
         profiles: Optional[ProfileManager] = None,
+        max_concurrent_tasks: Optional[int] = None,
     ) -> None:
         self.memory = memory
         self.wallet = wallet
@@ -85,9 +87,26 @@ class TaskQueueService:
 
         # Exposed for the live browser session (backend/browser/live_session.py):
         # the BrowserEngine + task id currently being driven by the agent loop,
-        # if any. None whenever no task is actively running a browser.
+        # if any. None whenever no task is actively running a browser. Kept
+        # as the *most recently started* running task for backward
+        # compatibility with existing Single Task Control (pause/resume/
+        # cancel) call sites -- those still target "the" current task.
         self.current_engine: Optional[BrowserEngine] = None
         self.current_task_id: Optional[str] = None
+
+        # Multi-Profile Browser Management: every task the worker loop has
+        # actually started gets an entry here for as long as it's driving a
+        # browser, keyed by task_id. This is what lets several tasks --
+        # each against its own Chrome Profile -- run truly concurrently
+        # instead of one at a time. profile_id is None for tasks that ran
+        # without an Identity & Profile Manager profile (throwaway context).
+        self.running: dict[str, dict] = {}
+        # How many tasks the worker loop will drive with live BrowserEngines
+        # at once. A given Chrome Profile can still only be claimed by one
+        # of them at a time (see ProfileRegistry.try_lock) -- this cap is
+        # about total concurrent browser instances, not a per-profile limit.
+        self.max_concurrent_tasks = max_concurrent_tasks or settings.max_concurrent_profile_tasks
+        self._active_workers: dict[str, asyncio.Task] = {}
 
     async def enqueue(
         self,
@@ -99,6 +118,19 @@ class TaskQueueService:
         scheduled_for: dt.datetime | None = None,
         profile_label: str | None = None,
     ) -> str:
+        # Multi-Profile Browser Management: this is the single choke point
+        # every entry point (chat, Telegram /task, REST API) goes through,
+        # so auto-selecting a profile here -- rather than duplicating the
+        # choice in each caller -- covers all of them. ChatEngine already
+        # resolves its own choice before calling enqueue() (it needs the
+        # picked name to tell the user), so this is a no-op there since
+        # profile_label is already set by the time it arrives.
+        if not profile_label and self.profiles is not None:
+            available = await self.profiles.registry.list_profiles(enabled_only=True)
+            best = ProfileManager.choose_best_profile(available, website=website)
+            if best is not None:
+                profile_label = best["name"]
+
         async with get_session() as session:
             task = Task(
                 website=website,
@@ -244,18 +276,62 @@ class TaskQueueService:
             "worker_paused": not self._paused.is_set(),
             "active_task_id": self.current_task_id,
             "paused_task_ids": [tid for tid, ev in self._task_pause_events.items() if not ev.is_set()],
+            # Full multi-profile picture: every task currently driving a
+            # live BrowserEngine, not just the single "current" one above.
+            "running_tasks": [
+                {"task_id": tid, "profile_id": info.get("profile_id"), "website": info.get("website")}
+                for tid, info in self.running.items()
+            ],
+            "concurrency": {"active": len(self.running), "max": self.max_concurrent_tasks},
         }
+
+    def get_engine_for_profile(self, profile_id: str) -> Optional[BrowserEngine]:
+        """Looks up the live BrowserEngine currently driving a task loaded
+        against this Chrome Profile, if any -- used by routes_profiles.py
+        so 'check sessions now' / the manual-open guard work correctly even
+        when several profiles are running at once (not just whichever
+        happens to be self.current_engine)."""
+        for info in self.running.values():
+            if info.get("profile_id") == profile_id:
+                return info.get("engine")
+        return None
+
+    def get_engine_for_task(self, task_id: str) -> Optional[BrowserEngine]:
+        info = self.running.get(task_id)
+        return info.get("engine") if info else None
 
     async def _worker_loop(self) -> None:
         while True:
             await self._paused.wait()
-            task = await self._pop_next()
+            # Reap any finished per-task worker coroutines so their slot
+            # counts as free for the concurrency check below.
+            for tid in [t for t, w in self._active_workers.items() if w.done()]:
+                self._active_workers.pop(tid, None)
+
+            if len(self._active_workers) >= self.max_concurrent_tasks:
+                await asyncio.sleep(1)
+                continue
+
+            locked_profile_ids = {info["profile_id"] for info in self.running.values() if info.get("profile_id")}
+            task = await self._pop_next(locked_profile_ids)
             if task is None:
                 await asyncio.sleep(2)
                 continue
-            await self._run_task(task)
 
-    async def _pop_next(self) -> Optional[Task]:
+            worker = asyncio.create_task(self._run_task(task))
+            self._active_workers[task.id] = worker
+
+    async def _pop_next(self, locked_profile_ids: set[str] = frozenset()) -> Optional[Task]:
+        """
+        Picks the next eligible QUEUED task -- highest priority, then oldest
+        first -- skipping over any task whose profile_label currently
+        resolves to a profile another running task already has locked, so
+        the worker loop doesn't try to double-book a Chrome Profile. Tasks
+        with no profile_label (or whose profile isn't currently locked) are
+        always eligible. A whole batch is fetched (not just one row) so a
+        busy-profile task at the front of the queue doesn't block eligible
+        tasks behind it from starting in other profiles.
+        """
         now = dt.datetime.now(dt.timezone.utc)
         async with get_session() as session:
             result = await session.execute(
@@ -265,12 +341,26 @@ class TaskQueueService:
                     (Task.scheduled_for.is_(None)) | (Task.scheduled_for <= now),
                 )
                 .order_by(Task.priority.desc(), Task.created_at.asc())
-                .limit(1)
+                .limit(50)
             )
-            task = result.scalar_one_or_none()
-            if task:
-                task.status = TaskStatus.PLANNING
-            return task
+            candidates = list(result.scalars().all())
+
+            chosen: Optional[Task] = None
+            if locked_profile_ids and self.profiles is not None:
+                for candidate in candidates:
+                    if not candidate.profile_label:
+                        chosen = candidate
+                        break
+                    resolved = await self.profiles.registry.resolve(candidate.profile_label)
+                    if resolved is None or resolved.id not in locked_profile_ids:
+                        chosen = candidate
+                        break
+            elif candidates:
+                chosen = candidates[0]
+
+            if chosen:
+                chosen.status = TaskStatus.PLANNING
+            return chosen
 
     async def _run_task(self, task: Task) -> None:
         started = time.time()
@@ -285,6 +375,16 @@ class TaskQueueService:
             try:
                 loaded_profile = await self.profiles.load_for_task(task.profile_label)
                 effective_wallet_label = task.wallet_label or loaded_profile.wallet_label
+            except ProfileBusyError as exc:
+                # Race with another task that grabbed this profile between
+                # _pop_next's check and this load -- not a failure, just bad
+                # timing. Put it back to QUEUED (no retry_count charged) so
+                # the worker loop picks it up again once the profile frees.
+                logger.info("Profile busy for task %s (%s), requeueing: %s", task.id, task.profile_label, exc)
+                async with get_session() as session:
+                    db_task = await session.get(Task, task.id)
+                    db_task.status = TaskStatus.QUEUED
+                return
             except (ProfileNotFoundError, ProfileError) as exc:
                 logger.warning("Profile load failed for task %s (%s): %s", task.id, task.profile_label, exc)
                 if self.notify_fn:
@@ -309,6 +409,11 @@ class TaskQueueService:
         await engine.start()
         self.current_engine = engine
         self.current_task_id = task.id
+        self.running[task.id] = {
+            "engine": engine,
+            "profile_id": loaded_profile.id if loaded_profile else None,
+            "website": task.website,
+        }
 
         # --- Identity & Profile Manager: steps 4-8 (detect Gmail/X/Discord ---
         # --- login, notify if any configured service isn't authenticated) ---
@@ -526,9 +631,15 @@ class TaskQueueService:
                 await self.activity_fn({"event": "task_crash", "task_id": task.id, "error": str(exc)})
         finally:
             self._task_pause_events.pop(task.id, None)
+            self.running.pop(task.id, None)
             if self.current_engine is engine:
-                self.current_engine = None
-                self.current_task_id = None
+                # Fall back to another still-running task, if any, so
+                # Single Task Control (pause/resume/cancel) keeps pointing
+                # at a live task instead of going stale while other
+                # profiles' tasks are still running.
+                other = next(iter(self.running.items()), None)
+                self.current_engine = other[1]["engine"] if other else None
+                self.current_task_id = other[0] if other else None
             await engine.stop()
             if loaded_profile is not None and self.profiles is not None:
                 try:

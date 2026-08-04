@@ -131,6 +131,12 @@ class Settings(BaseSettings):
         "locations are checked automatically.",
     )
     browser_default_timeout_ms: int = Field(default=30_000)
+    max_concurrent_profile_tasks: int = Field(
+        default=4,
+        description="Max number of tasks the TaskQueueService will drive with live BrowserEngines at "
+        "once (backend/planner/task_queue.py). Each running task holds its own Chrome profile lock, "
+        "so this is the ceiling on simultaneous browser instances, not a per-profile limit.",
+    )
 
     # --- Telegram ---
     telegram_bot_token: str = Field(default="")

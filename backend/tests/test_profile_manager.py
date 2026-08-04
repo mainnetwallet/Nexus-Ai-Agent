@@ -6,7 +6,7 @@ from backend.database.models import ProfileActivity, ProfileRecord
 from backend.database.session import get_session, init_db
 from backend.identity.detector import ServiceCheck
 from backend.identity.manager import ProfileManager
-from backend.identity.registry import ProfileError, ProfileNotFoundError, ProfileRegistry
+from backend.identity.registry import ProfileBusyError, ProfileError, ProfileNotFoundError, ProfileRegistry
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -51,9 +51,29 @@ async def test_load_for_task_resolves_by_id_and_by_name(tmp_path):
     by_id = await manager.load_for_task(created["id"])
     assert by_id.name == "Profile-01"
     assert by_id.wallet_label == "wallet-1"
+    await manager.release(created["id"])  # simulates the first task finishing
 
     by_name = await manager.load_for_task("profile-01")
     assert by_name.id == created["id"]
+
+
+@pytest.mark.asyncio
+async def test_load_for_task_raises_busy_when_already_in_use(tmp_path):
+    """Multi-Profile Browser Management: the same Chrome Profile can't be
+    claimed by two tasks at once (different profiles can still run
+    concurrently -- see test_task_queue_profile.py), even though it stays
+    freely available to whichever task grabs it next once released."""
+    manager, registry, _ = make_manager(tmp_path)
+    created = await registry.create_profile("Profile-01")
+
+    await manager.load_for_task(created["id"])
+    with pytest.raises(ProfileBusyError):
+        await manager.load_for_task(created["id"])
+
+    await manager.release(created["id"])
+    # Freed up again -- a second task can now claim it without error.
+    reloaded = await manager.load_for_task(created["id"])
+    assert reloaded.id == created["id"]
 
 
 @pytest.mark.asyncio

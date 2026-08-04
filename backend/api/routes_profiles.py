@@ -35,6 +35,16 @@ def _engine():
     return state.queue.current_engine if state.queue else None
 
 
+def _engine_for_profile(profile_id: str):
+    # Multi-Profile Browser Management: several tasks -- each against a
+    # different Chrome Profile -- can be running at once, so "the" browser
+    # engine isn't well-defined anymore. Look up the one actually loaded
+    # against *this* profile specifically.
+    if state.queue is None:
+        return None
+    return state.queue.get_engine_for_profile(profile_id)
+
+
 # ---------------------------------------------------------------------- #
 # Request/response models
 # ---------------------------------------------------------------------- #
@@ -216,7 +226,7 @@ async def open_profile_manually(profile_id: str):
     except ProfileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Profile not found") from exc
 
-    active_engine = _engine()
+    active_engine = _engine_for_profile(profile.id)
     if active_engine is not None and active_engine.user_data_dir == profile.chrome_profile_dir:
         raise HTTPException(
             status_code=409,
@@ -285,19 +295,34 @@ async def get_session_status(profile_id: str):
 
 @router.post("/{profile_id}/sessions/check")
 async def check_sessions_now(profile_id: str):
-    """Manually re-run Gmail/X/Discord login detection. Requires a task to
-    currently be running (so there's a live browser to check with) --
-    otherwise returns 409, mirroring how routes_wallet.py's network-switch
-    endpoints handle "no active browser session"."""
-    engine = _engine()
+    """Manually re-run Gmail/X/Discord login detection. Requires a task
+    currently running *this* profile (so there's a live browser to check
+    with) -- otherwise returns 409, mirroring how routes_wallet.py's
+    network-switch endpoints handle "no active browser session". Does not
+    call load_for_task (that would try to claim the profile's IN_USE lock a
+    second time on top of the task already running it); it just reuses the
+    live engine and records the check against the profile row directly."""
+    engine = _engine_for_profile(profile_id)
     if engine is None:
         raise HTTPException(status_code=409, detail="No active browser session -- run a task with this profile first")
     try:
-        loaded = await _manager().load_for_task(profile_id)
+        profile = await _registry().get_profile(profile_id)
     except ProfileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Profile not found") from exc
-    except ProfileError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from backend.identity.manager import LoadedProfile
+
+    loaded = LoadedProfile(
+        id=profile.id,
+        name=profile.name,
+        chrome_profile_dir=profile.chrome_profile_dir,
+        wallet_label=profile.wallet_label,
+        configured_services={
+            "gmail": profile.gmail_account,
+            "x": profile.x_account,
+            "discord": profile.discord_account,
+        },
+    )
     return await _manager().check_sessions(loaded, engine, notify_fn=None)
 
 

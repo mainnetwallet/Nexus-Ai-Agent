@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
@@ -161,3 +163,131 @@ async def test_run_task_profile_label_ignored_when_no_profile_manager_configured
 
 async def _noop_start(self) -> None:
     return None
+
+
+# ---------------------------------------------------------------------- #
+# Multi-Profile Browser Management
+# ---------------------------------------------------------------------- #
+
+class SlowFakeAgentLoop:
+    """Like FakeAgentLoop, but blocks on an asyncio.Event so a test can
+    prove two _run_task() calls are genuinely in flight at the same time
+    (both engines started) before either finishes."""
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    concurrent_starts = 0
+
+    def __init__(self, **kwargs):
+        pass
+
+    async def run(self, website, goal, wallet_label, notes):
+        SlowFakeAgentLoop.concurrent_starts += 1
+        SlowFakeAgentLoop.started.set()
+        await SlowFakeAgentLoop.finish.wait()
+        return TaskOutcome(status="succeeded", steps=[])
+
+
+@pytest.mark.asyncio
+async def test_two_different_profiles_run_concurrently(tmp_path, monkeypatch):
+    """Core Multi-Profile Browser Management guarantee: two tasks against
+    two *different* Chrome Profiles both get a live BrowserEngine and run
+    at the same time, instead of the second waiting for the first to
+    finish (the old one-task-at-a-time worker loop)."""
+    manager, registry = make_manager(tmp_path)
+    await registry.create_profile("Profile-01")
+    await registry.create_profile("Profile-02")
+
+    monkeypatch.setattr(task_queue_module.BrowserEngine, "start", _noop_start)
+    monkeypatch.setattr(task_queue_module.BrowserEngine, "stop", _noop_start)
+    monkeypatch.setattr(task_queue_module, "AgentLoop", SlowFakeAgentLoop)
+    SlowFakeAgentLoop.started = asyncio.Event()
+    SlowFakeAgentLoop.finish = asyncio.Event()
+    SlowFakeAgentLoop.concurrent_starts = 0
+
+    queue = make_queue(profiles=manager)
+    id1 = await queue.enqueue("https://a.example.com", "goal", None, "", profile_label="Profile-01")
+    id2 = await queue.enqueue("https://b.example.com", "goal", None, "", profile_label="Profile-02")
+
+    async with get_session() as session:
+        task1 = await session.get(Task, id1)
+        task2 = await session.get(Task, id2)
+
+    run1 = asyncio.create_task(queue._run_task(task1))
+    run2 = asyncio.create_task(queue._run_task(task2))
+
+    # Both should be able to reach the "running" (blocked-in-agent-loop)
+    # point without either having to wait for the other to release its
+    # profile first -- proves they're concurrent, not sequential.
+    await asyncio.wait_for(SlowFakeAgentLoop.started.wait(), timeout=2)
+    await asyncio.sleep(0.05)  # let the second one catch up too
+    assert len(queue.running) == 2
+    assert {info["profile_id"] for info in queue.running.values()} == {
+        (await registry.get_profile((await registry.resolve("Profile-01")).id)).id,
+        (await registry.get_profile((await registry.resolve("Profile-02")).id)).id,
+    }
+
+    SlowFakeAgentLoop.finish.set()
+    await asyncio.wait_for(asyncio.gather(run1, run2), timeout=2)
+
+    assert queue.running == {}
+    async with get_session() as session:
+        assert (await session.get(Task, id1)).status == TaskStatus.SUCCEEDED
+        assert (await session.get(Task, id2)).status == TaskStatus.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_second_task_on_same_profile_requeues_instead_of_failing(tmp_path, monkeypatch):
+    """The same Chrome Profile still can't run two tasks at once (Chrome
+    only allows one process per profile directory) -- but hitting that
+    should requeue the second task for a later attempt, not permanently
+    fail it."""
+    manager, registry = make_manager(tmp_path)
+    created = await registry.create_profile("Profile-01")
+
+    monkeypatch.setattr(task_queue_module.BrowserEngine, "start", _noop_start)
+    monkeypatch.setattr(task_queue_module.BrowserEngine, "stop", _noop_start)
+    monkeypatch.setattr(task_queue_module, "AgentLoop", FakeAgentLoop)
+
+    queue = make_queue(profiles=manager)
+    # Simulate the profile already being claimed by another running task.
+    await manager.load_for_task(created["id"])
+
+    task_id = await queue.enqueue("https://example.com", "goal", None, "", profile_label="Profile-01")
+    async with get_session() as session:
+        task = await session.get(Task, task_id)
+
+    await queue._run_task(task)
+
+    async with get_session() as session:
+        db_task = await session.get(Task, task_id)
+        assert db_task.status == TaskStatus.QUEUED
+        assert db_task.retry_count == 0  # not counted as a failed attempt
+
+
+@pytest.mark.asyncio
+async def test_pop_next_skips_locked_profile_for_next_eligible_task(tmp_path):
+    manager, registry = make_manager(tmp_path)
+    p1 = await registry.create_profile("Profile-01")
+    p2 = await registry.create_profile("Profile-02")
+
+    queue = make_queue(profiles=manager)
+    busy_id = await queue.enqueue("https://a.example.com", "goal", None, "", profile_label="Profile-01")
+    free_id = await queue.enqueue("https://b.example.com", "goal", None, "", profile_label="Profile-02")
+
+    picked = await queue._pop_next(locked_profile_ids={p1["id"]})
+    assert picked.id == free_id
+    assert picked.id != busy_id
+
+
+@pytest.mark.asyncio
+async def test_enqueue_auto_selects_profile_when_none_specified(tmp_path):
+    manager, registry = make_manager(tmp_path)
+    await registry.create_profile("Profile-01")
+
+    queue = make_queue(profiles=manager)
+    task_id = await queue.enqueue("https://example.com", "goal", None, "")
+
+    async with get_session() as session:
+        task = await session.get(Task, task_id)
+        assert task.profile_label == "Profile-01"
