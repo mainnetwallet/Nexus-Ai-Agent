@@ -13,7 +13,10 @@ from backend.wallet.hot_signer import (
     HotSignerError,
     HotSignerPersistError,
     get_hot_signer_address,
+    list_hot_signers,
     persist_hot_signer_secret,
+    remove_hot_signer,
+    set_active_hot_signer,
 )
 from backend.wallet.import_utils import WalletImportError
 from backend.wallet.registry import WalletNotFoundError
@@ -87,6 +90,15 @@ class SendNativeRequest(BaseModel):
     to_address: str
     amount: float
     wallet_id: Optional[str] = None
+    from_address: Optional[str] = Field(
+        default=None,
+        description="Which loaded hot signer key to sign with (see GET /hot-signer/list). "
+        "Omit to use whichever signer is currently active.",
+    )
+
+
+class SetActiveHotSignerRequest(BaseModel):
+    address: str
 
 
 # Legacy request shape kept for backward compatibility with existing callers
@@ -159,7 +171,7 @@ async def import_wallet(req: ImportWalletRequest):
     if should_save_as_hot_signer and req.method in ("private_key", "seed_phrase") and (req.private_key or req.seed_phrase):
         try:
             hot_signer_address = persist_hot_signer_secret(
-                private_key=req.private_key, seed_phrase=req.seed_phrase
+                private_key=req.private_key, seed_phrase=req.seed_phrase, label=req.label
             )
         except HotSignerPersistError as exc:
             raise HTTPException(status_code=400, detail=f"Wallet imported, but hot signer setup failed: {exc}") from exc
@@ -239,7 +251,9 @@ async def hot_signer_send_native(req: SendNativeRequest):
     if hot_signer is None:
         raise HTTPException(status_code=503, detail="Hot signer not initialized")
     try:
-        result = await hot_signer.send_native(req.chain, req.to_address, req.amount, wallet_id=req.wallet_id)
+        result = await hot_signer.send_native(
+            req.chain, req.to_address, req.amount, wallet_id=req.wallet_id, from_address=req.from_address
+        )
     except HotSignerDisabled as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HotSignerError as exc:
@@ -251,6 +265,37 @@ async def hot_signer_send_native(req: SendNativeRequest):
         "to_address": result.to_address,
         "amount_native": result.amount_native,
     }
+
+
+@router.get("/hot-signer/list")
+async def hot_signer_list():
+    """Lists every hot signer key currently loaded (address + label +
+    whether it's the active one). Never returns a private key."""
+    return {"signers": list_hot_signers()}
+
+
+@router.post("/hot-signer/active")
+async def hot_signer_set_active(req: SetActiveHotSignerRequest):
+    """Switches which loaded hot signer key is used by default for sends
+    that don't specify from_address explicitly."""
+    try:
+        address = set_active_hot_signer(req.address)
+    except HotSignerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"active_address": address}
+
+
+@router.delete("/hot-signer/{address}")
+async def hot_signer_remove(address: str):
+    """Removes one hot signer key from the encrypted keystore and from
+    this process's memory. Does not touch any other saved key."""
+    try:
+        removed = remove_hot_signer(address)
+    except HotSignerPersistError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No hot signer loaded for address {address!r}")
+    return {"ok": True}
 
 
 @router.get("/{wallet_id}")

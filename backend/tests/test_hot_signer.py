@@ -24,6 +24,9 @@ def _reset_hot_signer_settings(monkeypatch):
     monkeypatch.setattr(settings, "hot_signer_enabled", False)
     monkeypatch.setattr(settings, "hot_signer_private_key", "")
     monkeypatch.setattr(settings, "hot_signer_max_native_value", 0.0)
+    monkeypatch.setattr(settings, "hot_signer_keys", {})
+    monkeypatch.setattr(settings, "hot_signer_labels", {})
+    monkeypatch.setattr(settings, "hot_signer_active_address", "")
 
 
 def test_get_hot_signer_address_empty_when_unset():
@@ -176,9 +179,10 @@ def test_persist_from_private_key_encrypts_keystore_and_updates_settings(_isolat
     from backend.wallet.keystore import Keystore, KeystoreLocked
 
     ks = Keystore(_isolated_keystore)
-    assert ks.load(TEST_PASSPHRASE).lower() == TEST_PRIVATE_KEY.lower()
+    entries = ks.load_keys(TEST_PASSPHRASE)
+    assert entries[TEST_ADDRESS]["private_key"].lower() == TEST_PRIVATE_KEY.lower()
     with pytest.raises(KeystoreLocked):
-        ks.load("wrong-passphrase")
+        ks.load_keys("wrong-passphrase")
 
 
 def test_persist_from_seed_phrase_derives_first_account(_isolated_keystore, monkeypatch):
@@ -229,3 +233,88 @@ def test_unlock_hot_signer_wrong_passphrase_raises(_isolated_keystore, monkeypat
 
     with pytest.raises(HotSignerDisabled):
         unlock_hot_signer(passphrase="wrong-passphrase")
+
+
+# ---------------------------------------------------------------------- #
+# Multi-key keystore: a second saved key must NOT evict the first
+# ---------------------------------------------------------------------- #
+
+TEST_PRIVATE_KEY_2 = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690"
+TEST_ADDRESS_2 = Account.from_key(TEST_PRIVATE_KEY_2).address
+
+
+def test_second_persisted_key_does_not_evict_first(_isolated_keystore, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    addr1 = persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE, label="key1")
+    addr2 = persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY_2, passphrase=TEST_PASSPHRASE, label="key2")
+
+    assert addr1 == TEST_ADDRESS
+    assert addr2 == TEST_ADDRESS_2
+
+    # Both keys must be loaded in memory -- saving key2 must not wipe key1.
+    assert set(settings.hot_signer_keys.keys()) == {TEST_ADDRESS, TEST_ADDRESS_2}
+    assert settings.hot_signer_keys[TEST_ADDRESS].lower() == TEST_PRIVATE_KEY.lower()
+    assert settings.hot_signer_keys[TEST_ADDRESS_2].lower() == TEST_PRIVATE_KEY_2.lower()
+
+    # And both must be recoverable from disk, not just from settings.
+    from backend.wallet.keystore import Keystore
+
+    ks = Keystore(_isolated_keystore)
+    entries = ks.load_keys(TEST_PASSPHRASE)
+    assert set(entries.keys()) == {TEST_ADDRESS, TEST_ADDRESS_2}
+
+    # The most recently saved key becomes active by default (matches the
+    # old single-key behavior for anyone not explicitly managing multiple).
+    assert settings.hot_signer_active_address == TEST_ADDRESS_2
+    assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY_2.lower()
+
+
+def test_set_active_hot_signer_switches_without_dropping_keys(_isolated_keystore, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    from backend.wallet.hot_signer import list_hot_signers, set_active_hot_signer
+
+    persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE, label="key1")
+    persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY_2, passphrase=TEST_PASSPHRASE, label="key2")
+    assert settings.hot_signer_active_address == TEST_ADDRESS_2
+
+    switched = set_active_hot_signer(TEST_ADDRESS)
+    assert switched == TEST_ADDRESS
+    assert settings.hot_signer_active_address == TEST_ADDRESS
+    assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY.lower()
+
+    signers = list_hot_signers()
+    assert {s["address"] for s in signers} == {TEST_ADDRESS, TEST_ADDRESS_2}
+    active_flags = {s["address"]: s["active"] for s in signers}
+    assert active_flags[TEST_ADDRESS] is True
+    assert active_flags[TEST_ADDRESS_2] is False
+
+
+def test_unlock_hot_signer_migrates_legacy_single_key_file(_isolated_keystore, monkeypatch):
+    """A keystore file written by the OLD single-secret Keystore.save()
+    (raw key as the whole plaintext, no address indexing) must still
+    unlock cleanly and end up address-indexed on disk afterward."""
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    from backend.wallet.hot_signer import unlock_hot_signer
+    from backend.wallet.keystore import Keystore, _derive_fernet
+    import os
+
+    # Hand-write a legacy-format file: salt + Fernet(raw key string), no JSON.
+    salt = os.urandom(16)
+    fernet = _derive_fernet(TEST_PASSPHRASE, salt)
+    token = fernet.encrypt(TEST_PRIVATE_KEY.encode("utf-8"))
+    _isolated_keystore.write_bytes(salt + token)
+
+    address = unlock_hot_signer(passphrase=TEST_PASSPHRASE)
+    assert address == TEST_ADDRESS
+    assert settings.hot_signer_keys[TEST_ADDRESS].lower() == TEST_PRIVATE_KEY.lower()
+
+    # File on disk should now be migrated to the address-indexed format.
+    ks = Keystore(_isolated_keystore)
+    entries = ks.load_keys(TEST_PASSPHRASE)
+    assert set(entries.keys()) == {TEST_ADDRESS}

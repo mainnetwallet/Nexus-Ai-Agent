@@ -37,6 +37,7 @@ from eth_account.hdaccount import Mnemonic
 from backend.config.settings import BASE_DIR, settings
 from backend.wallet.chains import ChainInfo, chain_by_key
 from backend.wallet.keystore import (
+    LEGACY_ENTRY_ID,
     Keystore,
     KeystoreError,
     KeystoreLocked,
@@ -74,12 +75,41 @@ class NativeTransferResult:
     amount_wei: int
 
 
-def _require_enabled() -> str:
+def _find_loaded_key(address: str) -> Optional[str]:
+    """Case-insensitive lookup of a key already loaded into
+    settings.hot_signer_keys for this process."""
+    target = address.lower()
+    for addr, key_hex in settings.hot_signer_keys.items():
+        if addr.lower() == target:
+            return key_hex
+    return None
+
+
+def _canonical_loaded_address(address: str) -> Optional[str]:
+    """Returns the address exactly as stored in settings.hot_signer_keys
+    (correct checksum casing) for a case-insensitive match, or None."""
+    target = address.lower()
+    for addr in settings.hot_signer_keys:
+        if addr.lower() == target:
+            return addr
+    return None
+
+
+def _require_enabled(from_address: Optional[str] = None) -> str:
     if not settings.hot_signer_enabled:
         raise HotSignerDisabled(
             "Hot signer is disabled. Set HOT_SIGNER_ENABLED=true and HOT_SIGNER_PRIVATE_KEY "
-            "in the environment to enable direct RPC sends (burner wallets only)."
+            "in the environment (or import+save a key) to enable direct RPC sends "
+            "(burner wallets only)."
         )
+    if from_address:
+        key = _find_loaded_key(from_address)
+        if key is None:
+            raise HotSignerError(
+                f"No hot signer key loaded for address {from_address!r}. "
+                "Import it with save_as_hot_signer, or unlock the keystore, first."
+            )
+        return key
     key = settings.hot_signer_private_key.strip()
     if not key:
         raise HotSignerDisabled("HOT_SIGNER_PRIVATE_KEY is not set.")
@@ -87,7 +117,9 @@ def _require_enabled() -> str:
 
 
 def get_hot_signer_address() -> Optional[str]:
-    """Returns the address of the configured hot signer, or None if disabled/unset."""
+    """Returns the address of the currently ACTIVE hot signer, or None if
+    disabled/unset. Use list_hot_signers() to see every key currently
+    loaded, not just the active one."""
     key = settings.hot_signer_private_key.strip()
     if not key:
         return None
@@ -97,11 +129,94 @@ def get_hot_signer_address() -> Optional[str]:
         return None
 
 
+def list_hot_signers() -> list[dict]:
+    """Lists every hot signer key currently loaded into this process
+    (from unlock_hot_signer at startup and/or persist_hot_signer_secret
+    calls since), without ever exposing the private keys themselves."""
+    active = settings.hot_signer_active_address
+    return [
+        {
+            "address": addr,
+            "label": settings.hot_signer_labels.get(addr),
+            "active": addr.lower() == active.lower() if active else False,
+        }
+        for addr in settings.hot_signer_keys
+    ]
+
+
+def set_active_hot_signer(address: str) -> str:
+    """
+    Switches which already-loaded hot signer key HotSigner.send_native()
+    uses by default (when no from_address is given). Does not touch the
+    keystore file or drop any other key -- purely an in-memory selection
+    among keys already loaded via unlock_hot_signer/persist_hot_signer_secret.
+    Returns the canonical (checksummed) address. Raises HotSignerError if
+    that address isn't currently loaded.
+    """
+    canonical = _canonical_loaded_address(address)
+    if canonical is None:
+        raise HotSignerError(
+            f"No hot signer key loaded for address {address!r}. "
+            "Import/unlock it before making it active."
+        )
+    settings.hot_signer_active_address = canonical
+    settings.hot_signer_private_key = settings.hot_signer_keys[canonical]
+    settings.hot_signer_enabled = True
+    logger.info("Hot signer active address switched to %s", canonical)
+    return canonical
+
+
+def remove_hot_signer(address: str, passphrase: Optional[str] = None) -> bool:
+    """
+    Deletes one hot signer key from the encrypted keystore file AND from
+    this process's in-memory settings. If the removed key was the active
+    one, falls back to another loaded key (arbitrary pick) or, if none
+    remain, disables the hot signer entirely. Returns False if the address
+    wasn't loaded/found.
+    """
+    canonical = _canonical_loaded_address(address)
+    if canonical is None:
+        return False
+
+    pass_ = passphrase or settings.hot_signer_keystore_passphrase or None
+    if not pass_:
+        try:
+            pass_ = get_passphrase_noninteractive()
+        except KeystoreError as exc:
+            raise HotSignerPersistError(
+                "Set KEYSTORE_PASSPHRASE in the environment (or pass a passphrase "
+                "explicitly) before removing a hot signer key."
+            ) from exc
+
+    try:
+        _keystore.remove_key(canonical, pass_)
+    except KeystoreLocked as exc:
+        raise HotSignerPersistError(str(exc)) from exc
+
+    del settings.hot_signer_keys[canonical]
+    settings.hot_signer_labels.pop(canonical, None)
+
+    if settings.hot_signer_active_address.lower() == canonical.lower():
+        remaining = next(iter(settings.hot_signer_keys), None)
+        if remaining:
+            settings.hot_signer_active_address = remaining
+            settings.hot_signer_private_key = settings.hot_signer_keys[remaining]
+        else:
+            settings.hot_signer_active_address = ""
+            settings.hot_signer_private_key = ""
+            settings.hot_signer_enabled = False
+
+    logger.info("Hot signer key removed (address=%s)", canonical)
+    return True
+
+
 def persist_hot_signer_secret(
     private_key: Optional[str] = None,
     seed_phrase: Optional[str] = None,
     derivation_path: str = "m/44'/60'/0'/0/0",
     passphrase: Optional[str] = None,
+    label: Optional[str] = None,
+    make_active: bool = True,
 ) -> str:
     """
     Opt-in escape hatch, deliberately separate from
@@ -111,6 +226,16 @@ def persist_hot_signer_secret(
     instead of writing it to .env in plaintext, then updates the in-memory
     `settings` object so the hot signer is usable immediately, without a
     process restart.
+
+    MULTI-KEY: this ADDS the derived address as one entry alongside
+    whatever other hot signer keys are already loaded/stored -- it never
+    overwrites or drops a previously saved key the way the old single-key
+    keystore did. `make_active` (default True, matching the old
+    always-becomes-the-signer behavior) selects this newly saved key as
+    the one HotSigner.send_native() uses by default; pass False to add a
+    second/third signer without switching away from whichever is currently
+    active. Use set_active_hot_signer()/list_hot_signers() to manage
+    multiple saved keys afterward.
 
     This function exists ONLY to back an explicit "save as hot signer"
     opt-in on the wallet-import flow (REST: ImportWalletRequest.
@@ -167,11 +292,18 @@ def persist_hot_signer_secret(
                     "explicitly) before saving a hot signer key -- this call never prompts "
                     "interactively since it may be running inside a request."
                 ) from exc
-        _keystore.save(key_hex, pass_)
+        # add_key() only touches this one entry -- every other key already
+        # in the keystore file is preserved untouched.
+        _keystore.add_key(address, key_hex, pass_, label=label)
 
         # Update the live settings object so this takes effect immediately,
         # without waiting for a process restart to re-read the keystore.
-        settings.hot_signer_private_key = key_hex
+        settings.hot_signer_keys[address] = key_hex
+        if label:
+            settings.hot_signer_labels[address] = label
+        if make_active or not settings.hot_signer_active_address:
+            settings.hot_signer_active_address = address
+            settings.hot_signer_private_key = key_hex
         settings.hot_signer_enabled = True
     except HotSignerPersistError:
         raise
@@ -195,10 +327,19 @@ def hot_signer_keystore_exists() -> bool:
 
 def unlock_hot_signer(passphrase: Optional[str] = None, interactive: bool = False) -> str:
     """
-    Loads the encrypted key from the keystore file into settings at process
-    start (or on demand), so the hot signer can be used without holding the
-    passphrase in .env. Call this once at startup instead of relying on
-    HOT_SIGNER_PRIVATE_KEY being set directly. Returns the derived address.
+    Loads EVERY encrypted key from the keystore file into settings at
+    process start (or on demand), so all previously-saved hot signers are
+    usable without holding the passphrase in .env. Call this once at
+    startup instead of relying on HOT_SIGNER_PRIVATE_KEY being set
+    directly. Returns the ACTIVE address (settings.hot_signer_active_address
+    if it was already set and is among the loaded keys, otherwise whichever
+    key happens to load first) -- use list_hot_signers() to see all of them.
+
+    A keystore file written before multi-key support (a single raw secret,
+    no address indexing) is auto-migrated in place on this call: the key is
+    re-derived to find its real address, re-saved under that address, and
+    the old unindexed entry is removed -- one-time, transparent, no
+    behavior change for a single-key deployment.
 
     `interactive=True` is only safe from a script you run yourself in a
     terminal (e.g. a startup entrypoint before the server starts accepting
@@ -219,19 +360,57 @@ def unlock_hot_signer(passphrase: Optional[str] = None, interactive: bool = Fals
         except KeystoreError as exc:
             raise HotSignerDisabled(str(exc)) from exc
     try:
-        key_hex = _keystore.load(pass_)
+        entries = _keystore.load_keys(pass_)
     except KeystoreLocked as exc:
         raise HotSignerDisabled(str(exc)) from exc
 
+    if not entries:
+        raise HotSignerDisabled(f"Keystore at {KEYSTORE_PATH} contains no keys.")
+
+    if LEGACY_ENTRY_ID in entries:
+        legacy = entries.pop(LEGACY_ENTRY_ID)
+        legacy_key_hex = legacy["private_key"]
+        try:
+            real_address = Account.from_key(legacy_key_hex).address
+        finally:
+            pass
+        entries[real_address] = {"private_key": legacy_key_hex, "label": legacy.get("label")}
+        _keystore.replace_all(entries, pass_)
+        logger.info("Migrated legacy single-key keystore to multi-key format (address=%s)", real_address)
+        del legacy_key_hex
+
+    loaded_keys: dict[str, str] = {}
+    loaded_labels: dict[str, str] = {}
     try:
-        address = Account.from_key(key_hex).address
-        settings.hot_signer_private_key = key_hex
+        for addr, entry in entries.items():
+            key_hex = entry["private_key"]
+            # Re-derive to confirm the stored address actually matches its
+            # key rather than trusting the dict key blindly.
+            derived = Account.from_key(key_hex).address
+            loaded_keys[derived] = key_hex
+            if entry.get("label"):
+                loaded_labels[derived] = entry["label"]
+
+        settings.hot_signer_keys = loaded_keys
+        settings.hot_signer_labels = loaded_labels
+
+        active = settings.hot_signer_active_address
+        if not active or not _canonical_loaded_address(active):
+            active = next(iter(loaded_keys))
+        else:
+            active = _canonical_loaded_address(active)
+
+        settings.hot_signer_active_address = active
+        settings.hot_signer_private_key = loaded_keys[active]
         settings.hot_signer_enabled = True
     finally:
-        del key_hex
+        del entries
 
-    logger.info("Hot signer keystore unlocked for this session (address=%s)", address)
-    return address
+    logger.info(
+        "Hot signer keystore unlocked for this session (%d key(s), active=%s)",
+        len(loaded_keys), active,
+    )
+    return active
 
 
 class HotSigner:
@@ -251,13 +430,18 @@ class HotSigner:
         to_address: str,
         amount_native: float,
         wallet_id: Optional[str] = None,
+        from_address: Optional[str] = None,
     ) -> NativeTransferResult:
         """
         Send `amount_native` of the chain's native currency to `to_address`
         on `chain_key` (e.g. "base", "ethereum", "polygon" -- see
         backend/wallet/chains.py for the supported set).
+
+        `from_address` picks which loaded hot signer key to sign with (see
+        list_hot_signers()); omit it to use whichever key is currently
+        active (settings.hot_signer_active_address / set_active_hot_signer()).
         """
-        private_key = _require_enabled()
+        private_key = _require_enabled(from_address)
 
         chain = chain_by_key(chain_key)
         if chain is None:

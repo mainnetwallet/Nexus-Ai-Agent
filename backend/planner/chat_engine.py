@@ -1339,7 +1339,7 @@ class ChatEngine:
             from backend.wallet.hot_signer import HotSignerPersistError, persist_hot_signer_secret
 
             try:
-                hot_signer_address = persist_hot_signer_secret(**kwargs)
+                hot_signer_address = persist_hot_signer_secret(label=draft["label"], **kwargs)
             except HotSignerPersistError as exc:
                 reply += f" Hot signer setup failed: {exc}"
             else:

@@ -84,6 +84,9 @@ async def engine(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "hot_signer_keystore_passphrase", "test-passphrase-not-a-real-secret")
     monkeypatch.setattr(settings, "hot_signer_enabled", False)
     monkeypatch.setattr(settings, "hot_signer_private_key", "")
+    monkeypatch.setattr(settings, "hot_signer_keys", {})
+    monkeypatch.setattr(settings, "hot_signer_labels", {})
+    monkeypatch.setattr(settings, "hot_signer_active_address", "")
 
     queue = TaskQueueService(memory=FakeMemory(), wallet=None)
     wallet_registry = WalletRegistry()
