@@ -288,9 +288,12 @@ def test_set_active_hot_signer_switches_without_dropping_keys(_isolated_keystore
 
     signers = list_hot_signers()
     assert {s["address"] for s in signers} == {TEST_ADDRESS, TEST_ADDRESS_2}
-    active_flags = {s["address"]: s["active"] for s in signers}
-    assert active_flags[TEST_ADDRESS] is True
-    assert active_flags[TEST_ADDRESS_2] is False
+    # Every loaded key is active -- switching the default never deactivates
+    # the others; only is_default moves.
+    assert all(s["active"] is True for s in signers)
+    default_flags = {s["address"]: s["is_default"] for s in signers}
+    assert default_flags[TEST_ADDRESS] is True
+    assert default_flags[TEST_ADDRESS_2] is False
 
 
 def test_unlock_hot_signer_migrates_legacy_single_key_file(_isolated_keystore, monkeypatch):
@@ -318,3 +321,54 @@ def test_unlock_hot_signer_migrates_legacy_single_key_file(_isolated_keystore, m
     ks = Keystore(_isolated_keystore)
     entries = ks.load_keys(TEST_PASSPHRASE)
     assert set(entries.keys()) == {TEST_ADDRESS}
+
+
+# ---------------------------------------------------------------------- #
+# Every imported hot signer stays active -- a send with no from_address
+# only works implicitly while exactly one key is loaded.
+# ---------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_send_native_with_single_loaded_key_needs_no_from_address(_isolated_keystore, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE)
+
+    async def fake_rpc_call(client, rpc_url, method, params):
+        if method == "eth_getTransactionCount":
+            return "0x0"
+        if method == "eth_gasPrice":
+            return "0x3b9aca00"
+        return "0xabc"
+
+    monkeypatch.setattr(HotSigner, "_rpc_call", staticmethod(fake_rpc_call))
+
+    signer = HotSigner()
+    result = await signer.send_native("base", "0x" + "2" * 40, 0.001)
+    assert result.from_address == TEST_ADDRESS
+
+
+@pytest.mark.asyncio
+async def test_send_native_with_multiple_active_keys_requires_from_address(_isolated_keystore, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE)
+    persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY_2, passphrase=TEST_PASSPHRASE)
+
+    signer = HotSigner()
+    with pytest.raises(HotSignerError, match="specify from_address"):
+        await signer.send_native("base", "0x" + "2" * 40, 0.001)
+
+    # But an explicit from_address among the active keys still works.
+    async def fake_rpc_call(client, rpc_url, method, params):
+        if method == "eth_getTransactionCount":
+            return "0x0"
+        if method == "eth_gasPrice":
+            return "0x3b9aca00"
+        return "0xabc"
+
+    monkeypatch.setattr(HotSigner, "_rpc_call", staticmethod(fake_rpc_call))
+    result = await signer.send_native("base", "0x" + "2" * 40, 0.001, from_address=TEST_ADDRESS)
+    assert result.from_address == TEST_ADDRESS

@@ -110,6 +110,22 @@ def _require_enabled(from_address: Optional[str] = None) -> str:
                 "Import it with save_as_hot_signer, or unlock the keystore, first."
             )
         return key
+
+    # No from_address given. Every imported/unlocked key is auto-active --
+    # there's no single "the" hot signer anymore, so with more than one key
+    # loaded we can't silently guess which one to sign with; the caller
+    # must say which address to send from.
+    if len(settings.hot_signer_keys) > 1:
+        addrs = ", ".join(settings.hot_signer_keys)
+        raise HotSignerError(
+            f"{len(settings.hot_signer_keys)} hot signer keys are active -- specify from_address "
+            f"(one of: {addrs})."
+        )
+    if len(settings.hot_signer_keys) == 1:
+        return next(iter(settings.hot_signer_keys.values()))
+
+    # Nothing loaded via the keystore/multi-key path -- fall back to a
+    # directly-set HOT_SIGNER_PRIVATE_KEY (e.g. set straight in .env/tests).
     key = settings.hot_signer_private_key.strip()
     if not key:
         raise HotSignerDisabled("HOT_SIGNER_PRIVATE_KEY is not set.")
@@ -117,9 +133,11 @@ def _require_enabled(from_address: Optional[str] = None) -> str:
 
 
 def get_hot_signer_address() -> Optional[str]:
-    """Returns the address of the currently ACTIVE hot signer, or None if
+    """Returns the address of the default hot signer (used when a send
+    omits from_address and only one key is loaded), or None if
     disabled/unset. Use list_hot_signers() to see every key currently
-    loaded, not just the active one."""
+    loaded and active -- with more than one key loaded, ALL of them are
+    active, not just this one."""
     key = settings.hot_signer_private_key.strip()
     if not key:
         return None
@@ -132,13 +150,18 @@ def get_hot_signer_address() -> Optional[str]:
 def list_hot_signers() -> list[dict]:
     """Lists every hot signer key currently loaded into this process
     (from unlock_hot_signer at startup and/or persist_hot_signer_secret
-    calls since), without ever exposing the private keys themselves."""
-    active = settings.hot_signer_active_address
+    calls since), without ever exposing the private keys themselves.
+    EVERY imported/unlocked key is active -- importing another one never
+    deactivates the ones already loaded. `is_default` marks the one used
+    when a send omits from_address (only meaningful when exactly one key
+    is loaded; with several, from_address is required on every send)."""
+    default_addr = settings.hot_signer_active_address
     return [
         {
             "address": addr,
             "label": settings.hot_signer_labels.get(addr),
-            "active": addr.lower() == active.lower() if active else False,
+            "active": True,
+            "is_default": addr.lower() == default_addr.lower() if default_addr else False,
         }
         for addr in settings.hot_signer_keys
     ]
@@ -146,23 +169,23 @@ def list_hot_signers() -> list[dict]:
 
 def set_active_hot_signer(address: str) -> str:
     """
-    Switches which already-loaded hot signer key HotSigner.send_native()
-    uses by default (when no from_address is given). Does not touch the
-    keystore file or drop any other key -- purely an in-memory selection
-    among keys already loaded via unlock_hot_signer/persist_hot_signer_secret.
-    Returns the canonical (checksummed) address. Raises HotSignerError if
-    that address isn't currently loaded.
+    Sets which already-loaded hot signer key is the DEFAULT for a send
+    that omits from_address. Every loaded key is already active/usable via
+    from_address regardless of this setting -- this only matters when the
+    caller doesn't specify which one to use. Does not touch the keystore
+    file or drop any other key. Returns the canonical (checksummed)
+    address. Raises HotSignerError if that address isn't currently loaded.
     """
     canonical = _canonical_loaded_address(address)
     if canonical is None:
         raise HotSignerError(
             f"No hot signer key loaded for address {address!r}. "
-            "Import/unlock it before making it active."
+            "Import/unlock it before setting it as default."
         )
     settings.hot_signer_active_address = canonical
     settings.hot_signer_private_key = settings.hot_signer_keys[canonical]
     settings.hot_signer_enabled = True
-    logger.info("Hot signer active address switched to %s", canonical)
+    logger.info("Hot signer default address switched to %s", canonical)
     return canonical
 
 

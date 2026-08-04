@@ -229,12 +229,15 @@ async def delete_group(group_id: str):
 
 @router.get("/hot-signer/status")
 async def hot_signer_status():
-    """Read-only: whether the hot signer is enabled and, if so, its derived
-    address. Never returns the private key."""
+    """Read-only: whether the hot signer is enabled, how many keys are
+    currently loaded (all of them active -- see /hot-signer/list), and the
+    default address used when a send omits from_address. Never returns a
+    private key."""
     address = get_hot_signer_address()
     return {
-        "enabled": settings.hot_signer_enabled and bool(address),
+        "enabled": settings.hot_signer_enabled and bool(settings.hot_signer_keys or address),
         "address": address,
+        "active_signer_count": len(settings.hot_signer_keys),
         "max_native_value": settings.hot_signer_max_native_value or None,
     }
 
