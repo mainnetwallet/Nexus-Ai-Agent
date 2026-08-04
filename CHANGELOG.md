@@ -40,6 +40,14 @@ only for burner/bot wallets. Disabled by default.
 - This does not change `wallet/manager.py` or `wallet/registry.py`'s existing
   no-key-material guarantee; `HotSigner` is a new, independent module.
 - README's "Security notes" section documents the opt-in/burner-wallet caveat.
+- Dashboard: **Wallets** page gained a "Hot Signer" card
+  (`frontend/src/pages/Wallets.tsx`) showing enabled/disabled status + derived
+  address (never the key), plus a chain/amount/destination send form that
+  broadcasts immediately on submit (with a confirm() dialog since there's no
+  server-side approval step). New `GET /api/wallets/hot-signer/status` route
+  and `api.wallets.hotSigner.{status,send}` client methods
+  (`frontend/src/lib/api.ts`). `backend/tests/test_routes_hot_signer.py`
+  covers both endpoints.
 
 ## [Unreleased] - Single Task Control (pause/resume/cancel one task from Chat/Telegram/Dashboard/REST API)
 

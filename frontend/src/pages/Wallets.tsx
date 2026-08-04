@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react"
-import { Plus, Search, Wallet2, Trash2, Download, RefreshCw, ShieldCheck } from "lucide-react"
+import { Plus, Search, Wallet2, Trash2, Download, RefreshCw, ShieldCheck, Zap, Send } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -177,6 +177,8 @@ export function Wallets() {
               </div>
             </CardContent>
           </Card>
+
+          <HotSignerCard />
         </div>
 
         <div>{selected ? <WalletDetails wallet={selected} onChanged={() => wallets.refetch()} /> : null}</div>
@@ -305,6 +307,128 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-[var(--color-text-faint)]">{label}</span>
       <span className="font-mono text-xs text-[var(--color-text)]">{value}</span>
     </div>
+  )
+}
+
+const CHAINS = ["ethereum", "polygon", "arbitrum", "optimism", "base", "bsc"]
+
+function HotSignerCard() {
+  const status = useAsync(() => api.wallets.hotSigner.status(), [])
+  const toast = useToast()
+  const [chain, setChain] = useState("base")
+  const [toAddress, setToAddress] = useState("")
+  const [amount, setAmount] = useState("")
+  const [sending, setSending] = useState(false)
+  const [lastTx, setLastTx] = useState<string | null>(null)
+
+  const enabled = status.data?.enabled ?? false
+
+  async function handleSend(e: FormEvent) {
+    e.preventDefault()
+    const amountNum = parseFloat(amount)
+    if (!toAddress.trim() || !amountNum || amountNum <= 0) return
+    if (
+      !confirm(
+        `Send ${amountNum} native token on ${chain} to ${toAddress.trim()}? This broadcasts immediately — no approval popup.`
+      )
+    )
+      return
+    setSending(true)
+    setLastTx(null)
+    try {
+      const result = await api.wallets.hotSigner.send({ chain, to_address: toAddress.trim(), amount: amountNum })
+      setLastTx(result.tx_hash)
+      toast.push(`Sent — tx ${result.tx_hash.slice(0, 10)}…`, "success")
+      setToAddress("")
+      setAmount("")
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Send failed", "error")
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-4 pt-5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Zap className="size-4 text-[var(--color-signal-amber)]" />
+            <p className="text-sm font-semibold text-[var(--color-text)]">Hot Signer</p>
+          </div>
+          <Badge variant={enabled ? "green" : "neutral"}>{enabled ? "enabled" : "disabled"}</Badge>
+        </div>
+
+        <p className="text-xs text-[var(--color-text-faint)]">
+          Direct RPC native-token transfer — signs and broadcasts immediately, no browser-extension approval popup.
+          Separate from the wallet flow above; only ever point this at a burner/bot wallet.
+        </p>
+
+        {status.loading && <p className="text-xs text-[var(--color-text-muted)]">Checking status…</p>}
+
+        {!status.loading && !enabled && (
+          <p className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2 text-xs text-[var(--color-text-faint)]">
+            Disabled. Set <code>HOT_SIGNER_ENABLED=true</code> and <code>HOT_SIGNER_PRIVATE_KEY</code> in the
+            backend&apos;s environment to turn this on.
+          </p>
+        )}
+
+        {enabled && status.data?.address && (
+          <p className="break-all font-mono text-xs text-[var(--color-text-faint)]">
+            signer: {status.data.address}
+            {status.data.max_native_value ? ` · cap: ${status.data.max_native_value}/tx` : ""}
+          </p>
+        )}
+
+        <form onSubmit={handleSend} className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="hs-chain">Chain</Label>
+              <Select value={chain} onValueChange={setChain}>
+                <SelectTrigger id="hs-chain" disabled={!enabled}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CHAINS.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="hs-amount">Amount</Label>
+              <Input
+                id="hs-amount"
+                type="number"
+                step="any"
+                min="0"
+                placeholder="0.05"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                disabled={!enabled}
+              />
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="hs-to">Destination address</Label>
+            <Input
+              id="hs-to"
+              placeholder="0x…"
+              value={toAddress}
+              onChange={(e) => setToAddress(e.target.value)}
+              disabled={!enabled}
+            />
+          </div>
+          <Button type="submit" size="sm" disabled={!enabled || sending}>
+            <Send className="size-3.5" /> {sending ? "Sending…" : "Send"}
+          </Button>
+        </form>
+
+        {lastTx && <p className="break-all font-mono text-[10px] text-[var(--color-text-faint)]">tx: {lastTx}</p>}
+      </CardContent>
+    </Card>
   )
 }
 

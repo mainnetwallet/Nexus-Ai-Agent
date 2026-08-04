@@ -169,7 +169,9 @@ Phase 1 (working, tested backbone) সম্পূর্ণ। **Phase 2 চল�
   (`backend/wallet/hot_signer.py`) — default disabled, শুধু burner/bot wallet-এর জন্য বানানো।
   চালু করতে `.env`-এ `HOT_SIGNER_ENABLED=true` আর `HOT_SIGNER_PRIVATE_KEY=0x...` সেট করুন; চাইলে
   `HOT_SIGNER_MAX_NATIVE_VALUE` দিয়ে প্রতি-transaction cap-ও দেওয়া যায়। REST:
-  `POST /api/wallets/hot-signer/send`।
+  `POST /api/wallets/hot-signer/send`, status: `GET /api/wallets/hot-signer/status`। Dashboard-এর
+  **Wallets** page-এ একটা "Hot Signer" card আছে — enabled/disabled status, signer address, আর
+  chain/amount/address দিয়ে সরাসরি send করার ফর্ম।
 
 বিস্তারিত জানতে দেখুন `CHANGELOG.md` (প্রতিটা ধাপে কী শিপ হয়েছে) এবং `docs/ARCHITECTURE.md` (WebSocket layer, Task Scheduler, AI Decision Engine-এর data-flow লেভেলের লেখা)।
 

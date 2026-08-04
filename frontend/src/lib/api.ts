@@ -342,6 +342,31 @@ export interface WalletBalance {
   native: number
 }
 
+// ---------- Hot Signer (direct RPC native transfer, burner wallets) ----------
+// Deliberately separate from the WalletBalance/WalletMeta scope above: this
+// never touches the browser-extension flow, and the backend only ever
+// surfaces the derived address -- the private key stays server-side.
+export interface HotSignerStatus {
+  enabled: boolean
+  address: string | null
+  max_native_value: number | null
+}
+
+export interface HotSignerSendInput {
+  chain: string
+  to_address: string
+  amount: number
+  wallet_id?: string
+}
+
+export interface HotSignerSendResult {
+  tx_hash: string
+  chain: string
+  from_address: string
+  to_address: string
+  amount_native: number
+}
+
 export interface PendingWalletRequest {
   pending: boolean
   type?: "connection" | "transaction" | "signature" | "unknown"
@@ -885,6 +910,15 @@ export const api = {
         body: JSON.stringify({ network }),
       }),
     pendingRequest: () => request<PendingWalletRequest>("/api/wallets/requests/pending"),
+
+    hotSigner: {
+      status: () => request<HotSignerStatus>("/api/wallets/hot-signer/status"),
+      send: (input: HotSignerSendInput) =>
+        request<HotSignerSendResult>("/api/wallets/hot-signer/send", {
+          method: "POST",
+          body: JSON.stringify(input),
+        }),
+    },
 
     groups: {
       list: () => request<WalletGroup[]>("/api/wallets/groups"),
