@@ -1327,7 +1327,8 @@ class ChatEngine:
         if draft.get("save_as_hot_signer"):
             # Same in-memory secret from this turn, reused before it goes out
             # of scope -- never round-tripped through the LLM or stored
-            # anywhere but here and persist_hot_signer_secret's .env write.
+            # anywhere but here and persist_hot_signer_secret's encrypted
+            # keystore write (backend/wallet/keystore.py).
             from backend.wallet.hot_signer import HotSignerPersistError, persist_hot_signer_secret
 
             try:

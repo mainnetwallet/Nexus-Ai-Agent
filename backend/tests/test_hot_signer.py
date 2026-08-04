@@ -119,49 +119,73 @@ async def test_send_native_success(monkeypatch):
 TEST_MNEMONIC = "test test test test test test test test test test test junk"
 
 
-@pytest.fixture
-def _isolated_env_path(tmp_path, monkeypatch):
-    """Points ENV_PATH at a scratch file so these tests never touch the
-    repo's real .env, then restores the module-level constant after."""
-    import backend.wallet.hot_signer as hot_signer_module
+TEST_PASSPHRASE = "correct-horse-battery-staple"
 
-    scratch = tmp_path / ".env"
-    monkeypatch.setattr(hot_signer_module, "ENV_PATH", scratch)
+
+@pytest.fixture
+def _isolated_keystore(tmp_path, monkeypatch):
+    """Points the module's keystore at a scratch file so these tests never
+    touch a real keystore on disk, then restores it after."""
+    import backend.wallet.hot_signer as hot_signer_module
+    from backend.wallet.keystore import Keystore
+
+    scratch = tmp_path / "hot_signer.keystore"
+    monkeypatch.setattr(hot_signer_module, "KEYSTORE_PATH", scratch)
+    monkeypatch.setattr(hot_signer_module, "_keystore", Keystore(scratch))
     return scratch
 
 
-def test_persist_requires_exactly_one_secret(_isolated_env_path):
+def test_persist_requires_exactly_one_secret(_isolated_keystore):
     with pytest.raises(HotSignerPersistError):
-        persist_hot_signer_secret()
+        persist_hot_signer_secret(passphrase=TEST_PASSPHRASE)
     with pytest.raises(HotSignerPersistError):
-        persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, seed_phrase=TEST_MNEMONIC)
+        persist_hot_signer_secret(
+            private_key=TEST_PRIVATE_KEY, seed_phrase=TEST_MNEMONIC, passphrase=TEST_PASSPHRASE
+        )
 
 
-def test_persist_from_private_key_writes_env_and_updates_settings(_isolated_env_path, monkeypatch):
+def test_persist_without_passphrase_raises_instead_of_prompting(_isolated_keystore, monkeypatch):
+    # No explicit passphrase, no KEYSTORE_PASSPHRASE env var, no settings
+    # value -- this must raise immediately (never block on stdin), since
+    # the real caller is a request handler.
+    monkeypatch.delenv("KEYSTORE_PASSPHRASE", raising=False)
+    monkeypatch.setattr(settings, "hot_signer_keystore_passphrase", "")
+    with pytest.raises(HotSignerPersistError):
+        persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY)
+
+
+def test_persist_from_private_key_encrypts_keystore_and_updates_settings(_isolated_keystore, monkeypatch):
     monkeypatch.setattr(settings, "hot_signer_enabled", False)
     monkeypatch.setattr(settings, "hot_signer_private_key", "")
 
-    address = persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY)
+    address = persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE)
 
     assert address == TEST_ADDRESS
     assert settings.hot_signer_enabled is True
     assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY.lower()
 
-    contents = _isolated_env_path.read_text()
-    assert "HOT_SIGNER_ENABLED=true" in contents
-    assert "HOT_SIGNER_PRIVATE_KEY=" in contents
-    # The derived address should never appear masquerading as a comment-only
-    # file, but more importantly the key material must actually be there
-    # for the signer to work after restart -- just confirm the file isn't
-    # empty/broken rather than re-asserting the literal secret.
-    assert len(contents.strip()) > 0
+    # File on disk must exist and must NOT contain the plaintext key or
+    # its 0x-hex form anywhere -- only ciphertext bytes.
+    assert _isolated_keystore.exists()
+    raw = _isolated_keystore.read_bytes()
+    assert TEST_PRIVATE_KEY.encode() not in raw
+    assert TEST_PRIVATE_KEY[2:].encode() not in raw  # without 0x prefix too
+
+    # And it must actually decrypt back to the right key under the right
+    # passphrase, and refuse under a wrong one.
+    from backend.wallet.keystore import Keystore, KeystoreLocked
+
+    ks = Keystore(_isolated_keystore)
+    assert ks.load(TEST_PASSPHRASE).lower() == TEST_PRIVATE_KEY.lower()
+    with pytest.raises(KeystoreLocked):
+        ks.load("wrong-passphrase")
 
 
-def test_persist_from_seed_phrase_derives_first_account(_isolated_env_path, monkeypatch):
+def test_persist_from_seed_phrase_derives_first_account(_isolated_keystore, monkeypatch):
     monkeypatch.setattr(settings, "hot_signer_enabled", False)
     monkeypatch.setattr(settings, "hot_signer_private_key", "")
 
-    address = persist_hot_signer_secret(seed_phrase=TEST_MNEMONIC)
+    address = persist_hot_signer_secret(seed_phrase=TEST_MNEMONIC, passphrase=TEST_PASSPHRASE)
 
     expected = Account.from_mnemonic(TEST_MNEMONIC, account_path="m/44'/60'/0'/0/0").address
     assert address == expected
@@ -169,11 +193,39 @@ def test_persist_from_seed_phrase_derives_first_account(_isolated_env_path, monk
     assert settings.hot_signer_private_key.startswith("0x")
 
 
-def test_persist_rejects_invalid_seed_phrase(_isolated_env_path):
+def test_persist_rejects_invalid_seed_phrase(_isolated_keystore):
     with pytest.raises(HotSignerPersistError):
-        persist_hot_signer_secret(seed_phrase="not a real seed phrase at all")
+        persist_hot_signer_secret(seed_phrase="not a real seed phrase at all", passphrase=TEST_PASSPHRASE)
 
 
-def test_persist_rejects_invalid_private_key(_isolated_env_path):
+def test_persist_rejects_invalid_private_key(_isolated_keystore):
     with pytest.raises(HotSignerPersistError):
-        persist_hot_signer_secret(private_key="not-a-key")
+        persist_hot_signer_secret(private_key="not-a-key", passphrase=TEST_PASSPHRASE)
+
+
+def test_unlock_hot_signer_round_trips_through_keystore(_isolated_keystore, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+    persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE)
+
+    # Simulate a fresh process: clear the in-memory settings, then unlock.
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+
+    from backend.wallet.hot_signer import unlock_hot_signer
+
+    address = unlock_hot_signer(passphrase=TEST_PASSPHRASE)
+    assert address == TEST_ADDRESS
+    assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY.lower()
+    assert settings.hot_signer_enabled is True
+
+
+def test_unlock_hot_signer_wrong_passphrase_raises(_isolated_keystore, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", False)
+    monkeypatch.setattr(settings, "hot_signer_private_key", "")
+    persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE)
+
+    from backend.wallet.hot_signer import HotSignerDisabled, unlock_hot_signer
+
+    with pytest.raises(HotSignerDisabled):
+        unlock_hot_signer(passphrase="wrong-passphrase")

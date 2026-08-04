@@ -47,7 +47,12 @@ from backend.planner.task_queue import TaskQueueService
 from backend.plugins.registry import PluginRegistry
 from backend.skills.library import SkillService
 from backend.skills.teach import TeachModeManager
-from backend.wallet.hot_signer import HotSigner
+from backend.wallet.hot_signer import (
+    HotSigner,
+    HotSignerDisabled,
+    hot_signer_keystore_exists,
+    unlock_hot_signer,
+)
 from backend.wallet.manager import WalletManager
 from backend.wallet.registry import WalletRegistry
 from backend.wallet.tx_batch import TxBatchManager
@@ -102,6 +107,22 @@ async def lifespan(app: FastAPI):
     state.wallet_registry = WalletRegistry()
     state.tx_batch = TxBatchManager()
     state.hot_signer = HotSigner(wallet_registry=state.wallet_registry)
+
+    # If a hot-signer keystore file exists from a prior "save as hot signer"
+    # import, unlock it now so HOT_SIGNER_* is live for this process without
+    # needing a plaintext key in .env. Non-interactive: requires
+    # KEYSTORE_PASSPHRASE in the environment, never prompts (this runs
+    # during server startup, but keep the pattern consistent with the
+    # request-handling callers in routes_wallet.py / chat_engine.py).
+    # Missing/locked keystore is not fatal -- hot signer just stays
+    # disabled until the user re-imports or sets the passphrase and
+    # restarts.
+    try:
+        if hot_signer_keystore_exists():
+            unlocked_address = unlock_hot_signer()
+            logger.info("Hot signer keystore unlocked at startup (address=%s)", unlocked_address)
+    except HotSignerDisabled as exc:
+        logger.warning("Hot signer keystore present but not unlocked at startup: %s", exc)
 
     state.plugins = PluginRegistry(
         plugins_dir=settings.plugins_dir,

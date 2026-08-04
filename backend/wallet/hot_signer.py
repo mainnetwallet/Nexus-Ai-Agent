@@ -31,16 +31,23 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from dotenv import set_key
 from eth_account import Account
 from eth_account.hdaccount import Mnemonic
 
 from backend.config.settings import BASE_DIR, settings
 from backend.wallet.chains import ChainInfo, chain_by_key
+from backend.wallet.keystore import (
+    Keystore,
+    KeystoreError,
+    KeystoreLocked,
+    get_passphrase_interactive,
+    get_passphrase_noninteractive,
+)
 
 logger = logging.getLogger("nexus.wallet.hot_signer")
 
-ENV_PATH = BASE_DIR / ".env"
+KEYSTORE_PATH = BASE_DIR / "hot_signer.keystore"
+_keystore = Keystore(KEYSTORE_PATH)
 
 Account.enable_unaudited_hdwallet_features()
 
@@ -94,21 +101,33 @@ def persist_hot_signer_secret(
     private_key: Optional[str] = None,
     seed_phrase: Optional[str] = None,
     derivation_path: str = "m/44'/60'/0'/0/0",
+    passphrase: Optional[str] = None,
 ) -> str:
     """
     Opt-in escape hatch, deliberately separate from
     backend/wallet/import_utils.py's derive-then-discard rule: takes a
-    private key OR seed phrase, derives its address, and writes the raw
-    private key hex into .env as HOT_SIGNER_PRIVATE_KEY (plus
-    HOT_SIGNER_ENABLED=true), then updates the in-memory `settings` object
-    so the hot signer is usable immediately, without a process restart.
+    private key OR seed phrase, derives its address, and encrypts the raw
+    private key hex into a local keystore file (backend/wallet/keystore.py)
+    instead of writing it to .env in plaintext, then updates the in-memory
+    `settings` object so the hot signer is usable immediately, without a
+    process restart.
 
     This function exists ONLY to back an explicit "save as hot signer"
     opt-in on the wallet-import flow (REST: ImportWalletRequest.
     save_as_hot_signer; chat: wallet_save_as_hot_signer). It must never be
-    called implicitly on a plain import. Writing a plaintext key to a file
-    on disk is exactly the tradeoff hot_signer.py's module docstring already
-    describes -- burner/bot wallets only, never a wallet holding real value.
+    called implicitly on a plain import. Persisting a key at all -- even
+    encrypted -- is exactly the tradeoff hot_signer.py's module docstring
+    already describes: burner/bot wallets only, never a wallet holding real
+    value.
+
+    `passphrase` unlocks the keystore file; if not given, falls back to the
+    KEYSTORE_PASSPHRASE env var (settings.hot_signer_keystore_passphrase).
+    This function is reachable from an API route and from the chat engine,
+    both of which may be running inside a live request -- so it NEVER
+    prompts interactively. If no passphrase is available either way, it
+    raises HotSignerPersistError immediately rather than blocking on stdin.
+    The passphrase is not itself the wallet secret -- losing it just means
+    the keystore file can't be decrypted, it doesn't expose the key.
 
     Returns only the derived address. The key itself is never logged,
     returned, or passed to WalletRegistry -- callers should log the
@@ -138,27 +157,80 @@ def persist_hot_signer_secret(
     address = account.address
 
     try:
-        ENV_PATH.touch(exist_ok=True)
-        try:
-            ENV_PATH.chmod(0o600)
-        except OSError:
-            # Best-effort on platforms/filesystems that don't support chmod.
-            pass
-        set_key(str(ENV_PATH), "HOT_SIGNER_PRIVATE_KEY", key_hex, quote_mode="never")
-        set_key(str(ENV_PATH), "HOT_SIGNER_ENABLED", "true", quote_mode="never")
+        pass_ = passphrase or settings.hot_signer_keystore_passphrase or None
+        if not pass_:
+            try:
+                pass_ = get_passphrase_noninteractive()
+            except KeystoreError as exc:
+                raise HotSignerPersistError(
+                    "Set KEYSTORE_PASSPHRASE in the environment (or pass a passphrase "
+                    "explicitly) before saving a hot signer key -- this call never prompts "
+                    "interactively since it may be running inside a request."
+                ) from exc
+        _keystore.save(key_hex, pass_)
 
         # Update the live settings object so this takes effect immediately,
-        # without waiting for a process restart to re-read .env.
+        # without waiting for a process restart to re-read the keystore.
         settings.hot_signer_private_key = key_hex
         settings.hot_signer_enabled = True
+    except HotSignerPersistError:
+        raise
     except OSError as exc:
-        raise HotSignerPersistError(f"Could not write to {ENV_PATH}: {exc}") from exc
+        raise HotSignerPersistError(f"Could not write to {KEYSTORE_PATH}: {exc}") from exc
+    finally:
+        del key_hex
+        del pass_
+
+    logger.info(
+        "Hot signer secret encrypted and saved to keystore (address=%s); key itself never logged.",
+        address,
+    )
+    return address
+
+
+def hot_signer_keystore_exists() -> bool:
+    """Whether a hot-signer keystore file has been saved previously."""
+    return _keystore.exists()
+
+
+def unlock_hot_signer(passphrase: Optional[str] = None, interactive: bool = False) -> str:
+    """
+    Loads the encrypted key from the keystore file into settings at process
+    start (or on demand), so the hot signer can be used without holding the
+    passphrase in .env. Call this once at startup instead of relying on
+    HOT_SIGNER_PRIVATE_KEY being set directly. Returns the derived address.
+
+    `interactive=True` is only safe from a script you run yourself in a
+    terminal (e.g. a startup entrypoint before the server starts accepting
+    requests) -- it will fall back to a stdin prompt if KEYSTORE_PASSPHRASE
+    isn't set. Leave it False (the default) anywhere that might run inside
+    a live request; it will raise instead of blocking.
+    """
+    if not _keystore.exists():
+        raise HotSignerDisabled(f"No hot signer keystore found at {KEYSTORE_PATH}.")
+
+    pass_ = passphrase or settings.hot_signer_keystore_passphrase or None
+    if not pass_:
+        try:
+            if interactive:
+                pass_ = get_passphrase_interactive("Unlock hot signer keystore: ")
+            else:
+                pass_ = get_passphrase_noninteractive()
+        except KeystoreError as exc:
+            raise HotSignerDisabled(str(exc)) from exc
+    try:
+        key_hex = _keystore.load(pass_)
+    except KeystoreLocked as exc:
+        raise HotSignerDisabled(str(exc)) from exc
+
+    try:
+        address = Account.from_key(key_hex).address
+        settings.hot_signer_private_key = key_hex
+        settings.hot_signer_enabled = True
     finally:
         del key_hex
 
-    logger.info(
-        "Hot signer secret persisted to .env (address=%s); key itself never logged.", address
-    )
+    logger.info("Hot signer keystore unlocked for this session (address=%s)", address)
     return address
 
 

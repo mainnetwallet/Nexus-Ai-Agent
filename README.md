@@ -335,19 +335,24 @@ docker compose up --build
 - **Optional convenience, opt-in only:** the wallet-import flow (REST
   `POST /api/wallets/import` with `save_as_hot_signer: true`, or telling Chat to
   "save this as hot signer" / "eta diye tnx korte parbe" while importing by
-  private key or seed phrase) can write `HOT_SIGNER_PRIVATE_KEY` /
-  `HOT_SIGNER_ENABLED=true` straight into `.env` for you
+  private key or seed phrase) can persist the key for you
   (`backend/wallet/hot_signer.py::persist_hot_signer_secret`), so Chat can send
-  from that wallet immediately without a manual `.env` edit or restart. This is
+  from that wallet immediately without a manual restart. This is
   **off by default** and does nothing unless you explicitly set the flag.
   Understand the tradeoff before using it:
-  - Your private key is written to `.env` **in plaintext**. Anyone who can read
-    that file (another local user, a misconfigured backup, a leaked `.env` in a
-    Docker image or git commit) has the key, full stop — there is no encryption
-    at this layer.
-  - The file is chmod'd `0600` on save as a baseline, but that's a floor, not a
-    guarantee: back it up carefully, never commit `.env`, and don't run this on
-    shared/multi-tenant hosts.
+  - Your private key is encrypted at rest with a passphrase
+    (`backend/wallet/keystore.py`: PBKDF2 + Fernet) into `hot_signer.keystore`
+    at the project root — it is **not** written to `.env` in plaintext. You must
+    set `KEYSTORE_PASSPHRASE` in the environment before importing with
+    `save_as_hot_signer: true` (the API/chat path never prompts interactively —
+    it will error instead of hanging if the passphrase is missing). At server
+    startup, if a keystore file already exists, it's unlocked automatically as
+    long as `KEYSTORE_PASSPHRASE` is set.
+  - The keystore file is chmod'd `0600` on save as a baseline, but encryption
+    is still only as strong as your passphrase and where you keep it: never
+    commit `hot_signer.keystore` *or* your `KEYSTORE_PASSPHRASE` value, and
+    don't run this on shared/multi-tenant hosts. Losing the passphrase means
+    losing access to the key — there's no recovery path.
   - This is strictly a **burner/bot wallet** feature. Never opt a wallet holding
     real value into this — treat any wallet you save this way as fully spent the
     moment you do it.

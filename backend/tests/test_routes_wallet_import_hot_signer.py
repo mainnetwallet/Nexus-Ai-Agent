@@ -36,8 +36,13 @@ async def _clean_db():
 @pytest_asyncio.fixture
 async def client(monkeypatch, tmp_path):
     import backend.wallet.hot_signer as hot_signer_module
+    from backend.wallet.keystore import Keystore
 
-    monkeypatch.setattr(hot_signer_module, "ENV_PATH", tmp_path / ".env")
+    scratch_keystore = tmp_path / "hot_signer.keystore"
+    monkeypatch.setattr(hot_signer_module, "KEYSTORE_PATH", scratch_keystore)
+    monkeypatch.setattr(hot_signer_module, "_keystore", Keystore(scratch_keystore))
+    monkeypatch.setenv("KEYSTORE_PASSPHRASE", "test-passphrase-not-a-real-secret")
+    monkeypatch.setattr(settings, "hot_signer_keystore_passphrase", "test-passphrase-not-a-real-secret")
     monkeypatch.setattr(settings, "hot_signer_enabled", False)
     monkeypatch.setattr(settings, "hot_signer_private_key", "")
 
