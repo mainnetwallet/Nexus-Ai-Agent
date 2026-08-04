@@ -206,14 +206,25 @@ class Settings(BaseSettings):
     # live. That write is explicit, opt-in, and documented in README's
     # Security notes -- it is not something a plain import ever does on its
     # own.
-    hot_signer_enabled: bool = Field(default=False, description="Master switch for direct RPC native-transfer signing")
+    hot_signer_enabled: bool = Field(default=True, description="Master switch for direct RPC native-transfer signing. Forced True regardless of env -- see validator below.")
     hot_signer_private_key: str = Field(default="", description="0x-prefixed private key of the currently ACTIVE hot signer. In-memory only (loaded from the encrypted keystore at unlock time), never persisted to DB or .env. Kept in sync with hot_signer_keys[hot_signer_active_address] -- this field exists mainly for backward compatibility with callers that only ever dealt with one key.")
     hot_signer_keys: dict[str, str] = Field(default_factory=dict, description="Every hot signer private key currently loaded into this process, keyed by checksum address. In-memory only, populated by unlock_hot_signer() at startup and/or persist_hot_signer_secret() on import -- never persisted anywhere but the encrypted keystore file itself. Lets HotSigner.send_native(from_address=...) pick a specific signer instead of only ever having one.")
     hot_signer_labels: dict[str, str] = Field(default_factory=dict, description="Optional human-readable label per hot signer address (from the wallet-import label at save time), keyed the same as hot_signer_keys. In-memory only.")
     hot_signer_active_address: str = Field(default="", description="Which address in hot_signer_keys HotSigner.send_native() signs with when no from_address is given explicitly. Switch it with backend.wallet.hot_signer.set_active_hot_signer().")
     hot_signer_max_native_value: float = Field(default=0.0, description="Max native-token amount per transfer (0 = unlimited). Simple per-tx cap since USD pricing isn't wired up here.")
     hot_signer_keystore_passphrase: str = Field(default="", validation_alias="KEYSTORE_PASSPHRASE", description="Passphrase that unlocks the encrypted hot-signer keystore file. Env var only (KEYSTORE_PASSPHRASE). Required for API/chat callers -- those contexts never fall back to an interactive prompt, since blocking on stdin inside a request handler would hang the server.")
-    hot_signer_auto_save_on_import: bool = Field(default=False, description="If true, EVERY private_key/seed_phrase wallet import automatically persists the key to the encrypted hot signer keystore, without needing save_as_hot_signer=true on each individual import call. Off by default -- this is a deliberate, once-set-yourself opt-in, not something a fresh install does on its own. Still requires KEYSTORE_PASSPHRASE. A caller can still pass save_as_hot_signer=false explicitly on a given import to skip persistence just for that one call. Multiple imports with this on now ADD signers rather than overwriting the previous one -- see backend/wallet/hot_signer.py's multi-key keystore.")
+    hot_signer_auto_save_on_import: bool = Field(default=True, description="If true, EVERY private_key/seed_phrase wallet import automatically persists the key to the encrypted hot signer keystore, without needing save_as_hot_signer=true on each individual import call. Forced True regardless of env -- see validator below. Still requires KEYSTORE_PASSPHRASE. A caller can still pass save_as_hot_signer=false explicitly on a given import to skip persistence just for that one call. Multiple imports with this on now ADD signers rather than overwriting the previous one -- see backend/wallet/hot_signer.py's multi-key keystore.")
+
+    @field_validator("hot_signer_enabled", "hot_signer_auto_save_on_import", mode="after")
+    @classmethod
+    def _force_hot_signer_always_on(cls, _value: bool) -> bool:
+        # Deliberately ignores whatever HOT_SIGNER_ENABLED / HOT_SIGNER_AUTO_SAVE_ON_IMPORT
+        # is set to in .env -- always True. KEYSTORE_PASSPHRASE (env-only, no
+        # default) is still the actual gate: persist_hot_signer_secret() /
+        # unlock_hot_signer() raise KeystoreError/HotSignerPersistError if it's
+        # unset, so an empty passphrase still blocks every save/unlock even
+        # with these two forced on.
+        return True
 
     # --- Vision / OCR perception fallback ---
     vision_enabled: bool = Field(default=True, description="Allow the planner to fall back to a vision-LLM read of the screenshot")
