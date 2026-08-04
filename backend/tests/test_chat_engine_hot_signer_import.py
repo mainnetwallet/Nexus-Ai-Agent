@@ -1,7 +1,9 @@
 """
-Tests for the Chat wallet-import flow's opt-in hot signer save (see
+Tests for the Chat wallet-import flow's hot signer save behavior (see
 ChatEngine._handle_wallet_crud's import branch and
 _handle_pending_wallet_secret_turn in backend/planner/chat_engine.py).
+Persistence defaults to ON (settings.hot_signer_auto_save_on_import is
+forced True) unless the user explicitly declines in the same message.
 """
 from __future__ import annotations
 
@@ -107,7 +109,11 @@ async def engine(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_import_without_hot_signer_flag_does_not_persist(engine):
+async def test_import_without_explicit_flag_persists_via_server_default(engine):
+    # wallet_save_as_hot_signer isn't mentioned in the user's message, so
+    # this falls back to settings.hot_signer_auto_save_on_import -- which is
+    # forced True (see settings.py's _force_hot_signer_always_on validator),
+    # so the import persists to the hot signer even without an explicit ask.
     chat, _ = engine
     chat.llm.complete_json.return_value = {
         "category": "wallet",
@@ -117,13 +123,37 @@ async def test_import_without_hot_signer_flag_does_not_persist(engine):
     }
     start = await chat.send_message("s1", "import wallet burner-a with my private key")
     assert start["meta"]["pending"] == "wallet_secret"
-    assert start["meta"]["save_as_hot_signer"] is False
+    assert start["meta"]["save_as_hot_signer"] is True
 
     # The secret turn must NOT go back through the classifier.
     chat.llm.complete_json.reset_mock()
     result = await chat.send_message("s1", TEST_PRIVATE_KEY)
     assert chat.llm.complete_json.await_count == 0
     assert "Imported wallet 'burner-a'" in result["reply"]
+    assert result["meta"]["hot_signer_address"] == TEST_ADDRESS
+    assert settings.hot_signer_enabled is True
+    assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY.lower()
+
+
+@pytest.mark.asyncio
+async def test_import_with_explicit_false_flag_skips_hot_signer(engine):
+    # User explicitly declines this turn (wallet_save_as_hot_signer="false")
+    # -- this must override the server-wide auto-save default.
+    chat, _ = engine
+    chat.llm.complete_json.return_value = {
+        "category": "wallet",
+        "wallet_action": "import",
+        "wallet_label": "cold-a",
+        "wallet_import_method": "private_key",
+        "wallet_save_as_hot_signer": "false",
+    }
+    start = await chat.send_message("s1b", "import wallet cold-a with my private key, no hot signer")
+    assert start["meta"]["save_as_hot_signer"] is False
+
+    chat.llm.complete_json.reset_mock()
+    result = await chat.send_message("s1b", TEST_PRIVATE_KEY)
+    assert chat.llm.complete_json.await_count == 0
+    assert "Imported wallet 'cold-a'" in result["reply"]
     assert "hot_signer_address" not in result["meta"]
     assert settings.hot_signer_enabled is False
 

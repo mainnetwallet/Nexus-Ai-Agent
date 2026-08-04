@@ -1,7 +1,9 @@
 """
-Tests for POST /api/wallets/import's opt-in save_as_hot_signer flag (see
+Tests for POST /api/wallets/import's save_as_hot_signer handling (see
 backend/wallet/hot_signer.py::persist_hot_signer_secret and
-backend/api/routes_wallet.py's import_wallet route).
+backend/api/routes_wallet.py's import_wallet route). Persistence defaults to
+ON (settings.hot_signer_auto_save_on_import is forced True) -- these tests
+cover both that default and the explicit opt-out.
 """
 from __future__ import annotations
 
@@ -63,7 +65,12 @@ async def client(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_import_without_flag_does_not_touch_hot_signer(client):
+async def test_import_without_flag_persists_via_auto_save_default(client):
+    # save_as_hot_signer isn't passed on the request, so this falls back to
+    # settings.hot_signer_auto_save_on_import -- forced True (see
+    # settings.py's _force_hot_signer_always_on validator) -- so the import
+    # still persists to the hot signer. See test_explicit_false_overrides_
+    # auto_save_setting below for how to actually opt out.
     resp = await client.post(
         "/api/wallets/import",
         json={
@@ -73,9 +80,10 @@ async def test_import_without_flag_does_not_touch_hot_signer(client):
         },
     )
     assert resp.status_code == 200
-    assert "hot_signer_address" not in resp.json()
-    assert settings.hot_signer_enabled is False
-    assert settings.hot_signer_private_key == ""
+    body = resp.json()
+    assert body["hot_signer_address"] == TEST_ADDRESS
+    assert settings.hot_signer_enabled is True
+    assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY.lower()
 
 
 @pytest.mark.asyncio

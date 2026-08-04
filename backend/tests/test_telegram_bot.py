@@ -74,8 +74,8 @@ async def test_text_status_reflects_agent_runtime(bot_and_state):
     bot, state = bot_and_state
     await state.agent.start()
     text = await bot._text_status()
-    assert "status: running" in text
-    assert "tasks_completed" in text
+    assert "status: <b>running</b>" in text
+    assert "completed:" in text
 
 
 @pytest.mark.asyncio
