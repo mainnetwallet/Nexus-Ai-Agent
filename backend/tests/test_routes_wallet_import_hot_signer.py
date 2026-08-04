@@ -115,3 +115,36 @@ async def test_import_with_flag_ignored_for_address_method(client):
     assert resp.status_code == 200
     assert "hot_signer_address" not in resp.json()
     assert settings.hot_signer_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_auto_save_on_import_persists_without_explicit_flag(client, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_auto_save_on_import", True)
+
+    resp = await client.post(
+        "/api/wallets/import",
+        json={"label": "auto-1", "method": "private_key", "private_key": TEST_PRIVATE_KEY},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["hot_signer_address"] == TEST_ADDRESS
+    assert settings.hot_signer_enabled is True
+    assert settings.hot_signer_private_key.lower() == TEST_PRIVATE_KEY.lower()
+
+
+@pytest.mark.asyncio
+async def test_explicit_false_overrides_auto_save_setting(client, monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_auto_save_on_import", True)
+
+    resp = await client.post(
+        "/api/wallets/import",
+        json={
+            "label": "auto-2",
+            "method": "private_key",
+            "private_key": TEST_PRIVATE_KEY,
+            "save_as_hot_signer": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert "hot_signer_address" not in resp.json()
+    assert settings.hot_signer_enabled is False

@@ -72,6 +72,7 @@ from typing import Any, Optional
 
 from sqlalchemy import select
 
+from backend.config.settings import settings
 from backend.database.models import ChatMessage, ChatRole, ChatSession, Report, SkillSource, Task, TaskStatus
 from backend.database.session import get_session
 from backend.planner.llm_client import LLMClient
@@ -1184,9 +1185,15 @@ class ChatEngine:
                 # is intercepted before classification (see
                 # send_message / _looks_like_wallet_secret) so the secret
                 # never reaches the LLM classifier or any other LLM call.
-                save_as_hot_signer = str(intent.get("wallet_save_as_hot_signer") or "").strip().lower() in (
-                    "true", "1", "yes",
-                )
+                raw_flag = str(intent.get("wallet_save_as_hot_signer") or "").strip().lower()
+                if raw_flag in ("true", "1", "yes"):
+                    save_as_hot_signer = True
+                elif raw_flag in ("false", "0", "no"):
+                    save_as_hot_signer = False
+                else:
+                    # Not explicitly mentioned this turn -- fall back to the
+                    # server-wide default instead of assuming False.
+                    save_as_hot_signer = settings.hot_signer_auto_save_on_import
                 self._pending_wallet_import[session.id] = {
                     "label": label,
                     "method": method,

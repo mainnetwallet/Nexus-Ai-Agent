@@ -210,6 +210,7 @@ class Settings(BaseSettings):
     hot_signer_private_key: str = Field(default="", description="0x-prefixed private key of the burner/hot wallet. In-memory only (loaded from the encrypted keystore at unlock time), never persisted to DB or .env.")
     hot_signer_max_native_value: float = Field(default=0.0, description="Max native-token amount per transfer (0 = unlimited). Simple per-tx cap since USD pricing isn't wired up here.")
     hot_signer_keystore_passphrase: str = Field(default="", validation_alias="KEYSTORE_PASSPHRASE", description="Passphrase that unlocks the encrypted hot-signer keystore file. Env var only (KEYSTORE_PASSPHRASE). Required for API/chat callers -- those contexts never fall back to an interactive prompt, since blocking on stdin inside a request handler would hang the server.")
+    hot_signer_auto_save_on_import: bool = Field(default=False, description="If true, EVERY private_key/seed_phrase wallet import automatically persists the key to the encrypted hot signer keystore, without needing save_as_hot_signer=true on each individual import call. Off by default -- this is a deliberate, once-set-yourself opt-in, not something a fresh install does on its own. Still requires KEYSTORE_PASSPHRASE. A caller can still pass save_as_hot_signer=false explicitly on a given import to skip persistence just for that one call.")
 
     # --- Vision / OCR perception fallback ---
     vision_enabled: bool = Field(default=True, description="Allow the planner to fall back to a vision-LLM read of the screenshot")

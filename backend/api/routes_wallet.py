@@ -51,12 +51,15 @@ class ImportWalletRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     notes: Optional[str] = None
     group_id: Optional[str] = None
-    save_as_hot_signer: bool = Field(
-        default=False,
-        description="Opt-in only. If true and method is private_key/seed_phrase with a secret "
-        "provided, the secret is ALSO persisted to .env as HOT_SIGNER_PRIVATE_KEY (see "
-        "backend/wallet/hot_signer.py) so Chat/REST can immediately send native transfers with "
-        "no approval popup. Burner/bot wallets only -- never a wallet holding real value.",
+    save_as_hot_signer: Optional[bool] = Field(
+        default=None,
+        description="Per-import override. If true and method is private_key/seed_phrase with a "
+        "secret provided, the secret is ALSO persisted (encrypted) to the hot signer keystore "
+        "(see backend/wallet/hot_signer.py) so Chat/REST can immediately send native transfers "
+        "with no approval popup. If false, this import is never persisted even when "
+        "HOT_SIGNER_AUTO_SAVE_ON_IMPORT is on. If omitted (null), falls back to the "
+        "HOT_SIGNER_AUTO_SAVE_ON_IMPORT server setting. Burner/bot wallets only -- never a "
+        "wallet holding real value.",
     )
 
 
@@ -124,9 +127,12 @@ async def import_wallet(req: ImportWalletRequest):
     Import a wallet by seed phrase, private key, browser profile, or address.
     Seed phrases/private keys are used only to derive the checksum address
     (backend/wallet/import_utils.py) and are never written to storage, a log,
-    or the activity history -- UNLESS save_as_hot_signer=True is explicitly
-    set, in which case the secret is additionally persisted to .env for the
-    hot signer (see ImportWalletRequest.save_as_hot_signer above).
+    or the activity history -- UNLESS this import ends up persisted to the hot
+    signer keystore, which happens when save_as_hot_signer=True is explicitly
+    set on this call, OR (if save_as_hot_signer is omitted) when the server's
+    HOT_SIGNER_AUTO_SAVE_ON_IMPORT setting is on. Passing save_as_hot_signer
+    =False always skips persistence for this one import, regardless of the
+    server setting.
     """
     try:
         result = await _registry().import_wallet(
@@ -144,7 +150,13 @@ async def import_wallet(req: ImportWalletRequest):
     except WalletImportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if req.save_as_hot_signer and req.method in ("private_key", "seed_phrase") and (req.private_key or req.seed_phrase):
+    should_save_as_hot_signer = (
+        req.save_as_hot_signer
+        if req.save_as_hot_signer is not None
+        else settings.hot_signer_auto_save_on_import
+    )
+
+    if should_save_as_hot_signer and req.method in ("private_key", "seed_phrase") and (req.private_key or req.seed_phrase):
         try:
             hot_signer_address = persist_hot_signer_secret(
                 private_key=req.private_key, seed_phrase=req.seed_phrase
