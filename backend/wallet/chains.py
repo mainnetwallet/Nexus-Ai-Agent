@@ -23,12 +23,44 @@ SUPPORTED_CHAINS: dict[str, ChainInfo] = {
 _BY_CHAIN_ID_INT = {c.chain_id_int: c for c in SUPPORTED_CHAINS.values()}
 _BY_CHAIN_ID_HEX = {c.chain_id_hex.lower(): c for c in SUPPORTED_CHAINS.values()}
 
+# Chains discovered at runtime via chain_resolver.resolve_chain() get cached
+# here (process-lifetime only, never persisted) so a chain the user mentions
+# once doesn't have to be re-resolved on every message.
+_DYNAMIC_CHAINS: dict[str, ChainInfo] = {}
+_DYNAMIC_BY_CHAIN_ID_INT: dict[int, ChainInfo] = {}
+
+
+def register_dynamic_chain(info: ChainInfo) -> None:
+    """Cache a chain resolved at runtime (see wallet/chain_resolver.py)."""
+    _DYNAMIC_CHAINS[info.key.lower()] = info
+    _DYNAMIC_BY_CHAIN_ID_INT[info.chain_id_int] = info
+
 
 def chain_from_hex(chain_id_hex: str | None) -> ChainInfo | None:
     if not chain_id_hex:
         return None
-    return _BY_CHAIN_ID_HEX.get(chain_id_hex.lower())
+    hex_lc = chain_id_hex.lower()
+    found = _BY_CHAIN_ID_HEX.get(hex_lc)
+    if found:
+        return found
+    try:
+        as_int = int(hex_lc, 16)
+    except ValueError:
+        return None
+    return _DYNAMIC_BY_CHAIN_ID_INT.get(as_int)
 
 
 def chain_by_key(key: str) -> ChainInfo | None:
-    return SUPPORTED_CHAINS.get(key.lower())
+    key_lc = key.lower()
+    return SUPPORTED_CHAINS.get(key_lc) or _DYNAMIC_CHAINS.get(key_lc)
+
+
+def chain_by_id(chain_id_int: int) -> ChainInfo | None:
+    return _BY_CHAIN_ID_INT.get(chain_id_int) or _DYNAMIC_BY_CHAIN_ID_INT.get(chain_id_int)
+
+
+def all_known_chains() -> dict[str, ChainInfo]:
+    """Static + dynamically-resolved chains, static takes precedence."""
+    merged = dict(_DYNAMIC_CHAINS)
+    merged.update(SUPPORTED_CHAINS)
+    return merged

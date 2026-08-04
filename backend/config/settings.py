@@ -182,6 +182,7 @@ class Settings(BaseSettings):
 
     @property
     def rpc_endpoints(self) -> dict[str, str]:
+        """Primary (official) RPC per chain -- kept for backward compat."""
         return {
             "ethereum": self.rpc_ethereum,
             "polygon": self.rpc_polygon,
@@ -189,6 +190,54 @@ class Settings(BaseSettings):
             "optimism": self.rpc_optimism,
             "base": self.rpc_base,
             "bsc": self.rpc_bsc,
+        }
+
+    @property
+    def rpc_endpoints_with_fallback(self) -> dict[str, list[str]]:
+        """
+        Official RPC first, then curated reputable public fallbacks, tried in
+        order if the official one errors/rate-limits/is unreachable. All
+        entries are well-known, no-API-key public endpoints -- picked from
+        the ethereum-lists/chains registry (the same source chainlist.org
+        and MetaMask use), not arbitrary search results.
+        """
+        return {
+            "ethereum": [
+                self.rpc_ethereum,
+                "https://ethereum-rpc.publicnode.com",
+                "https://rpc.ankr.com/eth",
+                "https://cloudflare-eth.com",
+            ],
+            "polygon": [
+                self.rpc_polygon,
+                "https://polygon-bor-rpc.publicnode.com",
+                "https://rpc.ankr.com/polygon",
+                "https://polygon.drpc.org",
+            ],
+            "arbitrum": [
+                self.rpc_arbitrum,
+                "https://arbitrum-one-rpc.publicnode.com",
+                "https://rpc.ankr.com/arbitrum",
+                "https://arbitrum.drpc.org",
+            ],
+            "optimism": [
+                self.rpc_optimism,
+                "https://optimism-rpc.publicnode.com",
+                "https://rpc.ankr.com/optimism",
+                "https://optimism.drpc.org",
+            ],
+            "base": [
+                self.rpc_base,
+                "https://base-rpc.publicnode.com",
+                "https://rpc.ankr.com/base",
+                "https://base.drpc.org",
+            ],
+            "bsc": [
+                self.rpc_bsc,
+                "https://bsc-rpc.publicnode.com",
+                "https://rpc.ankr.com/bsc",
+                "https://bsc.drpc.org",
+            ],
         }
 
     # --- Hot signer (direct RPC send) -----------------------------------

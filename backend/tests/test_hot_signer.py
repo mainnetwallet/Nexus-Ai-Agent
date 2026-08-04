@@ -80,7 +80,7 @@ async def test_send_native_success(monkeypatch):
 
     calls = []
 
-    async def fake_rpc_call(client, rpc_url, method, params):
+    async def fake_rpc_call(rpc_candidates, method, params):
         calls.append(method)
         if method == "eth_getTransactionCount":
             return "0x5"
@@ -335,7 +335,7 @@ async def test_send_native_with_single_loaded_key_needs_no_from_address(_isolate
 
     persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE)
 
-    async def fake_rpc_call(client, rpc_url, method, params):
+    async def fake_rpc_call(rpc_candidates, method, params):
         if method == "eth_getTransactionCount":
             return "0x0"
         if method == "eth_gasPrice":
@@ -362,7 +362,7 @@ async def test_send_native_with_multiple_active_keys_requires_from_address(_isol
         await signer.send_native("base", "0x" + "2" * 40, 0.001)
 
     # But an explicit from_address among the active keys still works.
-    async def fake_rpc_call(client, rpc_url, method, params):
+    async def fake_rpc_call(rpc_candidates, method, params):
         if method == "eth_getTransactionCount":
             return "0x0"
         if method == "eth_gasPrice":

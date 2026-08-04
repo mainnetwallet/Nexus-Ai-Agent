@@ -35,6 +35,7 @@ from eth_account import Account
 from eth_account.hdaccount import Mnemonic
 
 from backend.config.settings import BASE_DIR, settings
+from backend.wallet.chain_resolver import get_rpc_candidates, resolve_chain, rpc_post_with_fallback
 from backend.wallet.chains import ChainInfo, chain_by_key
 from backend.wallet.keystore import (
     LEGACY_ENTRY_ID,
@@ -467,8 +468,23 @@ class HotSigner:
         private_key = _require_enabled(from_address)
 
         chain = chain_by_key(chain_key)
-        if chain is None:
-            raise HotSignerError(f"Unsupported chain: {chain_key!r}")
+        rpc_candidates: list[str]
+        if chain is not None:
+            rpc_candidates = get_rpc_candidates(chain)
+        else:
+            # Not one of the hardcoded chains -- try to resolve it (by name
+            # or numeric chain id) against the chain registry before giving
+            # up. Covers "send on avalanche" etc. without us having to
+            # hand-wire every EVM chain in chains.py.
+            chain, rpc_candidates = await resolve_chain(chain_key)
+            if chain is None:
+                raise HotSignerError(
+                    f"Unsupported chain: {chain_key!r} "
+                    "(not hardcoded and not found in the chain registry)"
+                )
+
+        if not rpc_candidates:
+            raise HotSignerError(f"No usable RPC endpoint found for {chain.key!r}")
 
         if not to_address or not to_address.lower().startswith("0x") or len(to_address) != 42:
             raise HotSignerError(f"Invalid destination address: {to_address!r}")
@@ -482,33 +498,28 @@ class HotSigner:
                 f"Transfer of {amount_native} exceeds HOT_SIGNER_MAX_NATIVE_VALUE cap ({cap})"
             )
 
-        rpc_url = settings.rpc_endpoints.get(chain.key)
-        if not rpc_url:
-            raise HotSignerError(f"No RPC endpoint configured for {chain.key!r}")
-
         account = Account.from_key(private_key)
         from_address = account.address
         amount_wei = round(amount_native * 1e18)
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            nonce = await self._rpc_call(
-                client, rpc_url, "eth_getTransactionCount", [from_address, "pending"]
-            )
-            gas_price = await self._rpc_call(client, rpc_url, "eth_gasPrice", [])
+        nonce = await self._rpc_call(
+            rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
+        )
+        gas_price = await self._rpc_call(rpc_candidates, "eth_gasPrice", [])
 
-            tx = {
-                "chainId": chain.chain_id_int,
-                "nonce": int(nonce, 16),
-                "to": to_address,
-                "value": amount_wei,
-                "gas": 21000,  # plain native transfer, no calldata
-                "gasPrice": int(gas_price, 16),
-            }
+        tx = {
+            "chainId": chain.chain_id_int,
+            "nonce": int(nonce, 16),
+            "to": to_address,
+            "value": amount_wei,
+            "gas": 21000,  # plain native transfer, no calldata
+            "gasPrice": int(gas_price, 16),
+        }
 
-            signed = account.sign_transaction(tx)
-            tx_hash = await self._rpc_call(
-                client, rpc_url, "eth_sendRawTransaction", [signed.raw_transaction.hex()]
-            )
+        signed = account.sign_transaction(tx)
+        tx_hash = await self._rpc_call(
+            rpc_candidates, "eth_sendRawTransaction", [signed.raw_transaction.hex()]
+        )
 
         logger.info(
             "Hot signer sent native transfer: chain=%s to=%s amount=%s tx=%s",
@@ -541,11 +552,10 @@ class HotSigner:
         )
 
     @staticmethod
-    async def _rpc_call(client: httpx.AsyncClient, rpc_url: str, method: str, params: list) -> str:
+    async def _rpc_call(rpc_candidates: list[str], method: str, params: list) -> str:
         payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
-        resp = await client.post(rpc_url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-        if "error" in data:
-            raise HotSignerError(f"RPC error on {method}: {data['error']}")
+        try:
+            data = await rpc_post_with_fallback(rpc_candidates, payload)
+        except Exception as exc:
+            raise HotSignerError(f"RPC error on {method} (tried {len(rpc_candidates)} endpoint(s)): {exc}") from exc
         return data["result"]

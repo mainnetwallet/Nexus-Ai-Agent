@@ -24,6 +24,7 @@ from backend.browser.engine import BrowserEngine
 from backend.config.settings import settings
 from backend.database.models import WalletActivity, WalletGroup, WalletRecord, WalletStatus
 from backend.database.session import get_session
+from backend.wallet.chain_resolver import get_rpc_candidates, resolve_chain, rpc_post_with_fallback
 from backend.wallet.chains import chain_by_key, chain_from_hex
 from backend.wallet.import_utils import (
     DerivedAddress,
@@ -386,18 +387,21 @@ class WalletRegistry:
     # Balance (read-only RPC, no wallet/browser involvement required)
     # ------------------------------------------------------------------ #
     async def get_balance(self, address: str, network: str) -> dict[str, Any]:
-        rpc_url = settings.rpc_endpoints.get(network.lower())
-        if not rpc_url:
-            raise ValueError(f"No RPC endpoint configured for network {network!r}")
+        chain = chain_by_key(network)
+        if chain is not None:
+            rpc_candidates = get_rpc_candidates(chain)
+        else:
+            # Not a hardcoded chain -- try resolving it dynamically (name or
+            # numeric chain id) via the chain registry before giving up.
+            chain, rpc_candidates = await resolve_chain(network)
+            if chain is None:
+                raise ValueError(f"No RPC endpoint configured for network {network!r}")
+
+        if not rpc_candidates:
+            raise ValueError(f"No usable RPC endpoint found for network {network!r}")
 
         payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_getBalance", "params": [address, "latest"]}
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(rpc_url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-
-        if "error" in data:
-            raise RuntimeError(f"RPC error: {data['error']}")
+        data = await rpc_post_with_fallback(rpc_candidates, payload)
 
         wei = int(data["result"], 16)
         return {"address": address, "network": network, "wei": wei, "native": wei / 1e18}
