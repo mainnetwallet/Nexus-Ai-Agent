@@ -1,6 +1,7 @@
 .env
 *.keystore
 hot_signer.keystore
+.keystore_passphrase
 logs/
 .ruff_cache/
 data/chroma/
