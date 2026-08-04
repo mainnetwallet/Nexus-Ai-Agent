@@ -147,6 +147,11 @@ network_switch -- only set when category=wallet",
 transaction koro\" / \"queue 10 transactions\" / \"do 5 payments\"), only set when category=wallet \
 wallet_action=batch_start, else empty",
   "wallet_new_name": "the new label, only set when wallet_action=rename",
+  "wallet_import_method": "address | private_key | seed_phrase -- only set when wallet_action=import; \
+NEVER put the actual private key or seed phrase text in this field, or anywhere else in this JSON -- if \
+the raw message itself contains what looks like a seed phrase or private key, that is handled separately \
+before you ever see it, so you will not be asked to classify a message like that",
+  "wallet_address": "a wallet address, only set when wallet_action=import and wallet_import_method=address",
   "wallet_network": "the target network name, only set when wallet_action=network_switch"
 }
 
@@ -236,7 +241,13 @@ tx_count=<N> wallet_label=<if a wallet is named, else empty>. Do NOT classify th
 there is no single website/goal yet, only a count; the destinations come in later messages once the \
 batch has started.
 - "list my wallets" / "show wallets" -> category=wallet wallet_action=list
-- "import a wallet" / "add wallet X" -> category=wallet wallet_action=import wallet_label=X
+- "import a wallet" / "add wallet X" (no secret, no method yet) -> category=wallet wallet_action=import \
+wallet_label=X
+- "import wallet X with my seed phrase" / "add wallet X using a private key" (method named, but the actual \
+secret is NOT in this message) -> category=wallet wallet_action=import wallet_label=X \
+wallet_import_method=seed_phrase|private_key
+- "import wallet X, address 0xabc..." -> category=wallet wallet_action=import wallet_label=X \
+wallet_import_method=address wallet_address=0xabc...
 - "delete wallet X" / "remove wallet X" -> category=wallet wallet_action=delete wallet_label=X
 - "rename wallet X to Y" -> category=wallet wallet_action=rename wallet_label=X wallet_new_name=Y
 - "use wallet X" / "switch to wallet X" / "make X active" -> category=wallet wallet_action=select \
@@ -298,6 +309,30 @@ concrete goal for just this one step. Respond with STRICT JSON only, no prose, n
 on that site for this one transaction"}"""
 
 
+# Wallet-secret guard: matched locally, never sent to any LLM (classifier or
+# otherwise). A seed phrase is 12/15/18/21/24 space-separated lowercase
+# words; a private key is 64 hex chars, optionally 0x-prefixed. Used both to
+# recognize the answer to a pending "paste your secret" prompt (see
+# ChatEngine._pending_wallet_import) and, as a standalone safety net, to
+# catch a secret pasted with no pending draft at all so it's never
+# classified or persisted in the clear either way.
+import re as _re
+
+_PRIVATE_KEY_RE = _re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
+_SEED_WORD_COUNTS = (12, 15, 18, 21, 24)
+
+
+def _looks_like_wallet_secret(text: str) -> Optional[str]:
+    """Returns 'private_key' | 'seed_phrase' | None."""
+    stripped = text.strip()
+    if _PRIVATE_KEY_RE.match(stripped):
+        return "private_key"
+    words = stripped.split()
+    if len(words) in _SEED_WORD_COUNTS and all(w.isalpha() and w.islower() for w in words):
+        return "seed_phrase"
+    return None
+
+
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
@@ -312,6 +347,10 @@ class ChatEngine:
         self.queue = queue  # TaskQueueService
         self.app_state = app_state  # backend.api.app_state.AppState, optional
         self.llm = llm or _default_model_manager
+        # session_id -> {"label": str, "method": "private_key"|"seed_phrase"}.
+        # In-memory only, deliberately never persisted -- see
+        # _handle_pending_wallet_secret_turn / _looks_like_wallet_secret.
+        self._pending_wallet_import: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ #
     # Session management
@@ -467,6 +506,25 @@ class ChatEngine:
                 reply, meta = f"Something went wrong queuing that: {exc}", {}
             await self._append(session.id, ChatRole.ASSISTANT, reply, category="task", meta=meta)
             return {"session_id": session.id, "reply": reply, "category": "task", "action": "select_profile", "meta": meta}
+
+        # Wallet secret entry: intercepted BEFORE intent classification --
+        # this message either answers a pending "paste your seed phrase /
+        # private key now" prompt (see _handle_wallet_crud's import
+        # branch), or looks like a raw secret with no pending draft at all.
+        # Either way it is NEVER passed to the LLM classifier or any other
+        # LLM call, and the copy just persisted by _append above is
+        # redacted immediately after use so it doesn't sit in chat history
+        # in the clear.
+        if session.id in self._pending_wallet_import or _looks_like_wallet_secret(text) is not None:
+            try:
+                reply, meta = await self._handle_pending_wallet_secret_turn(session, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Wallet secret import turn failed")
+                self._pending_wallet_import.pop(session.id, None)
+                reply, meta = f"Something went wrong importing that wallet: {exc}", {}
+            await self._redact_last_user_message(session.id)
+            await self._append(session.id, ChatRole.ASSISTANT, reply, category="wallet", meta=meta)
+            return {"session_id": session.id, "reply": reply, "category": "wallet", "action": "secret_import", "meta": meta}
 
         context = await self._conversation_context(session.id)
         classifier_input = self._classifier_prompt(context, text)
@@ -946,7 +1004,7 @@ class ChatEngine:
         # --- backend/api/routes_wallet.py uses, so chat/dashboard share ---
         # --- one source of truth.                                      ---
         if action in ("list", "import", "delete", "rename", "select", "balance", "groups_list", "network_switch"):
-            return await self._handle_wallet_crud(action, intent)
+            return await self._handle_wallet_crud(session, action, intent)
 
         tx_batch = getattr(self.app_state, "tx_batch", None) if self.app_state else None
         if tx_batch is None:
@@ -1028,7 +1086,7 @@ class ChatEngine:
                 return w
         return found[0]
 
-    async def _handle_wallet_crud(self, action: str, intent: dict) -> tuple[str, dict]:
+    async def _handle_wallet_crud(self, session: ChatSession, action: str, intent: dict) -> tuple[str, dict]:
         wallets = getattr(self.app_state, "wallet_registry", None) if self.app_state else None
         if wallets is None:
             return "The Wallet Registry isn't enabled in this deployment.", {}
@@ -1051,10 +1109,30 @@ class ChatEngine:
         if action == "import":
             if not label:
                 return "What should the new wallet be labeled?", {}
+
+            method = (intent.get("wallet_import_method") or "address").strip().lower()
+
+            if method in ("private_key", "seed_phrase"):
+                # Never accept the secret itself in this turn -- start a
+                # pending draft and wait for it in the NEXT message, which
+                # is intercepted before classification (see
+                # send_message / _looks_like_wallet_secret) so the secret
+                # never reaches the LLM classifier or any other LLM call.
+                self._pending_wallet_import[session.id] = {"label": label, "method": method}
+                secret_kind = "seed phrase" if method == "seed_phrase" else "private key"
+                return (
+                    f"Ready to import '{label}'. Paste just your {secret_kind} as your next message -- "
+                    "nothing else in that message, please. I'll use it only to derive the wallet address "
+                    "(it's never stored or logged), and I'll scrub it out of the chat history right after. "
+                    "Say \"cancel\" instead if you'd rather not.",
+                    {"pending": "wallet_secret", "method": method},
+                )
+
             from backend.wallet.import_utils import WalletImportError
 
+            address = (intent.get("wallet_address") or intent.get("query") or "").strip() or None
             try:
-                result = await wallets.import_wallet(label=label, method="address", address=intent.get("query") or None)
+                result = await wallets.import_wallet(label=label, method="address", address=address)
             except WalletImportError as exc:
                 return f"Couldn't import that wallet: {exc}", {}
             return f"Imported wallet '{label}'.", {"wallet_id": result.get("id")}
@@ -1111,6 +1189,71 @@ class ChatEngine:
             return f"Wallet '{target['label']}' no longer exists.", {}
 
         return "Not sure which wallet action you mean.", {}
+
+    async def _handle_pending_wallet_secret_turn(self, session: ChatSession, text: str) -> tuple[str, dict]:
+        """One turn answering a pending "paste your seed phrase / private
+        key now" prompt (see _handle_wallet_crud's import branch), or a
+        secret pasted with no pending draft at all. Never touches self.llm
+        -- the whole point of this path is that the secret is never sent
+        to any LLM. import_wallet() only ever derives the checksum address
+        from it (backend/wallet/import_utils.py) and never persists the
+        secret itself; the caller (send_message) redacts this turn's
+        stored chat message right after this returns either way."""
+        stripped = text.strip()
+        lowered = stripped.lower().rstrip(".!")
+        if lowered in ("cancel", "never mind", "nevermind", "stop", "skip"):
+            self._pending_wallet_import.pop(session.id, None)
+            return "Cancelled -- nothing was imported.", {}
+
+        draft = self._pending_wallet_import.pop(session.id, None)
+        if draft is None:
+            # No pending import was in flight -- this looked like a secret
+            # on its own (_looks_like_wallet_secret), but with no label/
+            # method to import it under. Refuse rather than guess.
+            return (
+                "That looks like a wallet secret, so I'm not going to do anything with it as a standalone "
+                "message -- say \"import wallet <label> with a seed phrase\" first so I know what to label "
+                "it, then paste the secret when I ask for it.",
+                {},
+            )
+
+        wallets = getattr(self.app_state, "wallet_registry", None) if self.app_state else None
+        if wallets is None:
+            return "The Wallet Registry isn't enabled in this deployment.", {}
+
+        detected = _looks_like_wallet_secret(stripped)
+        if detected is None or detected != draft["method"]:
+            expected = "seed phrase" if draft["method"] == "seed_phrase" else "private key"
+            self._pending_wallet_import[session.id] = draft
+            return f"That doesn't look like a {expected} -- paste just the {expected}, or say \"cancel\".", {}
+
+        from backend.wallet.import_utils import WalletImportError
+
+        kwargs = {"private_key": stripped} if draft["method"] == "private_key" else {"seed_phrase": stripped}
+        try:
+            result = await wallets.import_wallet(label=draft["label"], method=draft["method"], **kwargs)
+        except WalletImportError as exc:
+            return f"Couldn't import that wallet: {exc}", {}
+        return f"Imported wallet '{draft['label']}' (address derived, secret discarded).", {
+            "wallet_id": result.get("id")
+        }
+
+    async def _redact_last_user_message(self, session_id: str) -> None:
+        """Overwrites this session's most recent USER chat message with a
+        placeholder -- called right after a wallet-secret turn so the raw
+        seed phrase/private key doesn't sit in ChatMessage.content (and
+        therefore in _conversation_context, which later turns and even
+        Telegram history could otherwise surface) in the clear."""
+        async with get_session() as db:
+            result = await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id, ChatMessage.role == ChatRole.USER)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(1)
+            )
+            row = result.scalar_one_or_none()
+            if row is not None:
+                row.content = "[wallet secret -- redacted from chat history]"
 
     # ------------------------------------------------------------------ #
     # MCP Core
