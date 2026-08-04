@@ -146,6 +146,12 @@ class WalletRecord(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     group_id: Mapped[str | None] = mapped_column(ForeignKey("wallet_groups.id"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Independent per-wallet on/off switch -- unlike is_active (which is
+    # exclusive: only one wallet can be "the" active/default one at a time,
+    # see select_active_wallet), any number of wallets can be enabled=True
+    # simultaneously. Every newly imported wallet starts enabled; toggling
+    # one wallet off never touches any other wallet's enabled flag.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

@@ -74,6 +74,7 @@ class UpdateWalletRequest(BaseModel):
     status: Optional[str] = None
     group_id: Optional[str] = None
     wallet_type: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
 class CreateGroupRequest(BaseModel):
@@ -318,6 +319,7 @@ async def get_wallet(wallet_id: str):
         "notes": wallet.notes,
         "group_id": wallet.group_id,
         "is_active": wallet.is_active,
+        "enabled": wallet.enabled if wallet.enabled is not None else True,
         "last_used_at": wallet.last_used_at.isoformat() if wallet.last_used_at else None,
         "created_at": wallet.created_at.isoformat() if wallet.created_at else None,
     }
@@ -349,6 +351,29 @@ async def select_active_wallet(wallet_id: str):
     """
     try:
         return await _registry().select_active_wallet(wallet_id)
+    except WalletNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Wallet not found") from exc
+
+
+@router.post("/{wallet_id}/enable")
+async def enable_wallet(wallet_id: str):
+    """
+    Turns this wallet on. Independent per wallet -- any number of wallets
+    can be enabled at once (unlike POST /{wallet_id}/select, which is
+    exclusive). Newly imported wallets are enabled by default.
+    """
+    try:
+        return await _registry().set_wallet_enabled(wallet_id, True)
+    except WalletNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Wallet not found") from exc
+
+
+@router.post("/{wallet_id}/disable")
+async def disable_wallet(wallet_id: str):
+    """Turns this wallet off. Only affects this wallet -- every other
+    imported wallet stays exactly as it was."""
+    try:
+        return await _registry().set_wallet_enabled(wallet_id, False)
     except WalletNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Wallet not found") from exc
 

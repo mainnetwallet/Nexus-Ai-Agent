@@ -51,6 +51,7 @@ def _wallet_to_dict(w: WalletRecord) -> dict[str, Any]:
         "notes": w.notes,
         "group_id": w.group_id,
         "is_active": w.is_active,
+        "enabled": w.enabled if w.enabled is not None else True,
         "last_used_at": w.last_used_at.isoformat() if w.last_used_at else None,
         "created_at": w.created_at.isoformat() if w.created_at else None,
     }
@@ -174,7 +175,7 @@ class WalletRegistry:
             return wallet
 
     async def update_wallet(self, wallet_id: str, **fields: Any) -> dict[str, Any]:
-        allowed = {"label", "network", "tags", "notes", "status", "group_id", "wallet_type"}
+        allowed = {"label", "network", "tags", "notes", "status", "group_id", "wallet_type", "enabled"}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if "status" in updates and not isinstance(updates["status"], WalletStatus):
             try:
@@ -271,6 +272,28 @@ class WalletRegistry:
                     wallet_id=target.id,
                     event_type="selected",
                     description=f"Wallet {target.label!r} set as active",
+                )
+            )
+            await session.flush()
+            return _wallet_to_dict(target)
+
+    async def set_wallet_enabled(self, wallet_id: str, enabled: bool) -> dict[str, Any]:
+        """
+        Independent per-wallet on/off toggle. Unlike select_active_wallet,
+        this never touches any other wallet -- any number of wallets can be
+        enabled at the same time. Every wallet starts enabled on import.
+        """
+        async with get_session() as session:
+            target = await session.get(WalletRecord, wallet_id)
+            if not target:
+                raise WalletNotFoundError(wallet_id)
+            target.enabled = enabled
+            await session.flush()
+            session.add(
+                WalletActivity(
+                    wallet_id=target.id,
+                    event_type="enabled" if enabled else "disabled",
+                    description=f"Wallet {target.label!r} {'enabled' if enabled else 'disabled'}",
                 )
             )
             await session.flush()

@@ -47,10 +47,30 @@ async def _migrate_memory_entries(conn: Any) -> None:
             await conn.execute(text(f"ALTER TABLE memory_entries ADD COLUMN {column_name} {ddl_type}"))
 
 
+_WALLET_MIGRATIONS: list[tuple[str, str]] = [
+    # enabled: independent per-wallet on/off switch added alongside the
+    # pre-existing exclusive is_active flag -- see WalletRecord.enabled.
+    # Existing rows default to 1 (enabled) so upgrading never silently
+    # disables wallets someone already imported.
+    ("enabled", "BOOLEAN DEFAULT 1"),
+]
+
+
+async def _migrate_wallets(conn: Any) -> None:
+    """Best-effort additive migration: add any wallet columns missing from
+    an existing `wallets` table. No-op on a fresh DB."""
+    result = await conn.execute(text("PRAGMA table_info(wallets)"))
+    existing = {row[1] for row in result.fetchall()}
+    for column_name, ddl_type in _WALLET_MIGRATIONS:
+        if column_name not in existing:
+            await conn.execute(text(f"ALTER TABLE wallets ADD COLUMN {column_name} {ddl_type}"))
+
+
 async def init_db() -> None:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate_memory_entries(conn)
+        await _migrate_wallets(conn)
 
 
 @asynccontextmanager

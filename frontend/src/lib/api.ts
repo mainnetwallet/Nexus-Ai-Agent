@@ -189,6 +189,7 @@ export interface WalletMeta {
   notes: string | null
   group_id: string | null
   is_active: boolean
+  enabled: boolean
   last_used_at: string | null
   created_at: string
 }
@@ -216,6 +217,7 @@ export interface UpdateWalletInput {
   status?: WalletStatus
   group_id?: string
   wallet_type?: string
+  enabled?: boolean
 }
 
 export interface WalletGroup {
@@ -896,6 +898,8 @@ export const api = {
     remove: (id: string) => request<{ ok: boolean }>(`/api/wallets/${id}`, { method: "DELETE" }),
     selectActive: (id: string) => request<WalletMeta>(`/api/wallets/${id}/select`, { method: "POST" }),
     getActive: () => request<WalletMeta | null>("/api/wallets/active"),
+    enable: (id: string) => request<WalletMeta>(`/api/wallets/${id}/enable`, { method: "POST" }),
+    disable: (id: string) => request<WalletMeta>(`/api/wallets/${id}/disable`, { method: "POST" }),
     status: (id: string) => request<WalletLiveStatus>(`/api/wallets/${id}/status`),
     balance: (id: string, network?: string) =>
       request<WalletBalance>(`/api/wallets/${id}/balance${network ? `?network=${network}` : ""}`),

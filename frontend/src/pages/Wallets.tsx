@@ -150,7 +150,8 @@ export function Wallets() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="truncate text-sm font-medium text-[var(--color-text)]">{w.label}</p>
-                        {w.is_active && <Badge variant="cyan">active</Badge>}
+                        <Badge variant={w.enabled ? "cyan" : "neutral"}>{w.enabled ? "active" : "disabled"}</Badge>
+                        {w.is_active && <Badge variant="violet">default</Badge>}
                       </div>
                       <p className="truncate font-mono text-xs text-[var(--color-text-faint)]">
                         {w.address ?? "no address on file"}
@@ -213,6 +214,24 @@ function WalletDetails({ wallet, onChanged }: { wallet: WalletMeta; onChanged: (
     }
   }
 
+  async function handleToggleEnabled() {
+    setBusy(true)
+    try {
+      if (wallet.enabled) {
+        await api.wallets.disable(wallet.id)
+        toast.push(`${wallet.label} disabled`, "success")
+      } else {
+        await api.wallets.enable(wallet.id)
+        toast.push(`${wallet.label} enabled`, "success")
+      }
+      onChanged()
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Failed to update wallet", "error")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function handleDelete() {
     if (!confirm(`Remove ${wallet.label} from Nexus-Agent? This only deletes local metadata.`)) return
     setBusy(true)
@@ -237,8 +256,11 @@ function WalletDetails({ wallet, onChanged }: { wallet: WalletMeta; onChanged: (
         <p className="break-all font-mono text-xs text-[var(--color-text-faint)]">{wallet.address ?? "—"}</p>
 
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" onClick={handleSelectActive} disabled={busy || wallet.is_active}>
-            {wallet.is_active ? "Active wallet" : "Set active"}
+          <Button size="sm" variant={wallet.enabled ? "subtle" : "default"} onClick={handleToggleEnabled} disabled={busy}>
+            {wallet.enabled ? "Disable" : "Enable"}
+          </Button>
+          <Button size="sm" variant="subtle" onClick={handleSelectActive} disabled={busy || wallet.is_active}>
+            {wallet.is_active ? "Default wallet" : "Set as default"}
           </Button>
           <Button size="sm" variant="subtle" onClick={() => status.refetch()}>
             <RefreshCw className="size-3.5" /> Refresh status
@@ -247,6 +269,11 @@ function WalletDetails({ wallet, onChanged }: { wallet: WalletMeta; onChanged: (
             <Trash2 className="size-3.5" /> Delete
           </Button>
         </div>
+        <p className="text-xs text-[var(--color-text-faint)]">
+          Enable/disable is independent per wallet — every imported wallet stays active unless you turn it off
+          yourself. &quot;Default wallet&quot; is separate: it&apos;s just which one Chat/tasks use when you don&apos;t
+          name one.
+        </p>
 
         <Tabs defaultValue="status">
           <TabsList>
