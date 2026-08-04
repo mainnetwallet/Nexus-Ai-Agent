@@ -10,12 +10,33 @@ class FakeMCP:
     def __init__(self, result):
         self._result = result
         self.calls = []
+        self.enable_calls = []
+        self.disable_calls = []
+        self._connectors = [
+            {"name": "filesystem", "enabled": True},
+            {"name": "github", "enabled": False},
+        ]
 
     async def route_and_call(self, request_text, connector_hint=None, arguments=None, min_score=None):
         self.calls.append(
             {"request_text": request_text, "connector_hint": connector_hint, "arguments": arguments}
         )
         return self._result
+
+    # --- Connector management surface, mirrors backend.mcp.manager.MCPManager ---
+    def list_connectors(self):
+        return self._connectors
+
+    async def enable(self, name):
+        self.enable_calls.append(name)
+        return name == "github"
+
+    async def disable(self, name):
+        self.disable_calls.append(name)
+        return name == "filesystem"
+
+    async def health(self):
+        return {"filesystem": {"status": "connected"}, "github": {"status": "disconnected"}}
 
 
 @pytest.mark.asyncio
@@ -87,4 +108,82 @@ async def test_mcp_core_not_enabled_fallback_when_app_state_is_none():
     chat = ChatEngine(queue=None, app_state=None)
     reply, meta = await chat._handle_mcp_command({}, "read a file")
     assert reply == "MCP Core isn't enabled in this deployment."
+    assert meta == {}
+
+
+# ---------------------------------------------------------------------- #
+# Connector management (mcp_action) -- distinct from route_and_call above
+# ---------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_mcp_list_connectors():
+    fake_mcp = FakeMCP(result=None)
+    app_state = SimpleNamespace(mcp=fake_mcp)
+    chat = ChatEngine(queue=None, app_state=app_state)
+
+    reply, meta = await chat._handle_mcp_command({"mcp_action": "list_connectors"}, "list connectors")
+    assert "filesystem" in reply and "github" in reply
+    assert "enabled" in reply and "disabled" in reply
+    assert meta == {}
+
+
+@pytest.mark.asyncio
+async def test_mcp_enable_connector_success():
+    fake_mcp = FakeMCP(result=None)
+    app_state = SimpleNamespace(mcp=fake_mcp)
+    chat = ChatEngine(queue=None, app_state=app_state)
+
+    reply, meta = await chat._handle_mcp_command(
+        {"mcp_action": "enable_connector", "mcp_connector": "github"}, "enable github connector"
+    )
+    assert fake_mcp.enable_calls == ["github"]
+    assert "enabled" in reply.lower()
+    assert meta == {"connector": "github"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_enable_connector_failure():
+    fake_mcp = FakeMCP(result=None)
+    app_state = SimpleNamespace(mcp=fake_mcp)
+    chat = ChatEngine(queue=None, app_state=app_state)
+
+    reply, meta = await chat._handle_mcp_command(
+        {"mcp_action": "enable_connector", "mcp_connector": "filesystem"}, "enable filesystem connector"
+    )
+    assert fake_mcp.enable_calls == ["filesystem"]
+    assert "couldn't enable" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_mcp_disable_connector_success():
+    fake_mcp = FakeMCP(result=None)
+    app_state = SimpleNamespace(mcp=fake_mcp)
+    chat = ChatEngine(queue=None, app_state=app_state)
+
+    reply, meta = await chat._handle_mcp_command(
+        {"mcp_action": "disable_connector", "mcp_connector": "filesystem"}, "disable filesystem connector"
+    )
+    assert fake_mcp.disable_calls == ["filesystem"]
+    assert "disabled" in reply.lower()
+    assert meta == {"connector": "filesystem"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_connector_action_without_name_asks_which():
+    fake_mcp = FakeMCP(result=None)
+    app_state = SimpleNamespace(mcp=fake_mcp)
+    chat = ChatEngine(queue=None, app_state=app_state)
+
+    reply, meta = await chat._handle_mcp_command({"mcp_action": "enable_connector"}, "enable the connector")
+    assert "which connector" in reply.lower()
+    assert fake_mcp.enable_calls == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_health_action():
+    fake_mcp = FakeMCP(result=None)
+    app_state = SimpleNamespace(mcp=fake_mcp)
+    chat = ChatEngine(queue=None, app_state=app_state)
+
+    reply, meta = await chat._handle_mcp_command({"mcp_action": "health"}, "connector health")
+    assert "connected" in reply and "disconnected" in reply
     assert meta == {}
