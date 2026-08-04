@@ -69,7 +69,7 @@ async def test_send_success(client, monkeypatch):
     monkeypatch.setattr(settings, "hot_signer_enabled", True)
     monkeypatch.setattr(settings, "hot_signer_private_key", TEST_PRIVATE_KEY)
 
-    async def fake_rpc_call(client_, rpc_url, method, params):
+    async def fake_rpc_call(rpc_candidates, method, params):
         if method == "eth_getTransactionCount":
             return "0x1"
         if method == "eth_gasPrice":

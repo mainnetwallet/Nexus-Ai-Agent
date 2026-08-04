@@ -151,7 +151,7 @@ async def test_import_with_hot_signer_flag_persists_and_enables_send(engine):
 
     # The already-wired HotSigner instance in app_state should now be able
     # to send without any further .env/manual setup.
-    async def fake_rpc_call(client_, rpc_url, method, params):
+    async def fake_rpc_call(rpc_candidates, method, params):
         if method == "eth_getTransactionCount":
             return "0x1"
         if method == "eth_gasPrice":
