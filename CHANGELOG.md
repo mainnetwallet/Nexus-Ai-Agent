@@ -4,6 +4,43 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Hot Signer: direct RPC native-token transfer from Chat (burner wallets)
+
+New, deliberately separate opt-in path alongside the existing browser-extension
+wallet flow. `WalletManager`/`WalletRegistry` never touch a private key by design
+(human approves every popup in the user's own extension); `HotSigner` is the
+opposite tradeoff — the backend holds a private key in memory (env var only) and
+signs + broadcasts a native transfer itself via JSON-RPC, no approval step. Intended
+only for burner/bot wallets. Disabled by default.
+
+### Added
+- `backend/wallet/hot_signer.py` — `HotSigner.send_native(chain, to_address, amount)`:
+  builds a plain native-transfer tx (nonce + gas price via JSON-RPC, `eth_account`
+  signing, `eth_sendRawTransaction` broadcast), validates chain/address/amount,
+  enforces an optional per-tx cap, and logs the send to `WalletRegistry.record_activity`
+  (address/amount/chain/tx hash only — never the key). `get_hot_signer_address()`
+  helper for reading the configured signer's address without exposing the key.
+- `backend/config/settings.py` / `.env.example` — `HOT_SIGNER_ENABLED`,
+  `HOT_SIGNER_PRIVATE_KEY`, `HOT_SIGNER_MAX_NATIVE_VALUE`.
+- `backend/api/app_state.py` / `backend/main.py` — `state.hot_signer`, initialized
+  at startup wired to the existing `WalletRegistry` for activity logging.
+- `backend/api/routes_wallet.py` — `POST /api/wallets/hot-signer/send`.
+- `backend/planner/chat_engine.py` — `CLASSIFIER_SYSTEM_PROMPT` gained
+  `wallet_action=send_native` (+ `send_chain`/`send_to_address`/`send_amount`
+  fields, with Bengali/Banglish phrasing examples) and a new
+  `ChatEngine._handle_send_native` handler dispatched from
+  `_handle_wallet_command`. No confirmation turn — the message is parsed and
+  the transfer executes immediately, gated only by the hot signer's own
+  enable flag and per-tx cap.
+- `backend/tests/test_hot_signer.py` — disabled-state, unsupported-chain,
+  invalid-address, over-cap, and a fully mocked successful-send test
+  (asserts RPC call order, returned tx hash, and the activity-log write).
+
+### Notes
+- This does not change `wallet/manager.py` or `wallet/registry.py`'s existing
+  no-key-material guarantee; `HotSigner` is a new, independent module.
+- README's "Security notes" section documents the opt-in/burner-wallet caveat.
+
 ## [Unreleased] - Single Task Control (pause/resume/cancel one task from Chat/Telegram/Dashboard/REST API)
 
 `TaskQueueService.pause_task/resume_task/cancel` (backend/planner/task_queue.py)

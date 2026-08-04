@@ -79,6 +79,7 @@ from backend.planner.model_manager import TaskType
 from backend.planner.model_manager import model_manager as _default_model_manager
 from backend.identity.manager import ProfileManager
 from backend.identity.pending_profile import PendingTask
+from backend.wallet.hot_signer import HotSignerDisabled, HotSignerError
 
 logger = logging.getLogger("nexus.chat")
 
@@ -142,7 +143,7 @@ huggingface, mistral, grok, kimi, qwen, glm...), only set when category=ai_model
   "ai_task_type": "coding | browser_automation | planning | vision | long_context | fast_response | \
 general_chat | research | reasoning | low_cost -- only set when category=ai_model action=set_routing_rule",
   "wallet_action": "batch_start | list | import | delete | rename | select | balance | groups_list | \
-network_switch -- only set when category=wallet",
+network_switch | send_native -- only set when category=wallet",
   "tx_count": "integer number of transactions/payments the user wants queued in a batch (e.g. from \"10 ta \
 transaction koro\" / \"queue 10 transactions\" / \"do 5 payments\"), only set when category=wallet \
 wallet_action=batch_start, else empty",
@@ -152,7 +153,12 @@ NEVER put the actual private key or seed phrase text in this field, or anywhere 
 the raw message itself contains what looks like a seed phrase or private key, that is handled separately \
 before you ever see it, so you will not be asked to classify a message like that",
   "wallet_address": "a wallet address, only set when wallet_action=import and wallet_import_method=address",
-  "wallet_network": "the target network name, only set when wallet_action=network_switch"
+  "wallet_network": "the target network name, only set when wallet_action=network_switch",
+  "send_chain": "the chain/network name (ethereum | polygon | arbitrum | optimism | base | bsc), only set \
+when wallet_action=send_native",
+  "send_to_address": "the 0x destination address, only set when wallet_action=send_native",
+  "send_amount": "the numeric native-token amount to send as a plain string (e.g. \"0.05\"), only set when \
+wallet_action=send_native"
 }
 
 Guidance:
@@ -257,6 +263,11 @@ wallet_label=X
 - "list wallet groups" -> category=wallet wallet_action=groups_list
 - "switch wallet X to network Y" -> category=wallet wallet_action=network_switch wallet_label=X \
 wallet_network=Y
+- "send 0.05 to 0xabc... on base" / "0.1 ETH pathao 0xabc... e ethereum e" / "transfer 2 MATIC to 0xabc... \
+on polygon" -> category=wallet wallet_action=send_native send_chain=<chain> send_to_address=0xabc... \
+send_amount=<amount>. This is a direct hot-signer native transfer (see backend/wallet/hot_signer.py) -- \
+extract chain, address, and amount whenever all three are present, in Bengali/Banglish or English, \
+regardless of phrasing (e.g. "koto token pathate hobe", "send", "transfer", "pathao").
 - "retry task <id>" / "retry that task" -> category=agent_command action=retry_task task_id=<id if given>
 - "delete task <id>" / "remove task <id> from the list" -> category=agent_command action=delete_task \
 task_id=<id>
@@ -1006,6 +1017,9 @@ class ChatEngine:
         if action in ("list", "import", "delete", "rename", "select", "balance", "groups_list", "network_switch"):
             return await self._handle_wallet_crud(session, action, intent)
 
+        if action == "send_native":
+            return await self._handle_send_native(intent)
+
         tx_batch = getattr(self.app_state, "tx_batch", None) if self.app_state else None
         if tx_batch is None:
             return "Transaction batching isn't enabled in this deployment.", {}
@@ -1033,6 +1047,50 @@ class ChatEngine:
             "Each still goes through your configured wallet-approval policy -- I'm only queuing them, "
             "not changing how they get approved.",
             {"tx_count": count, "wallet_label": wallet_label},
+        )
+
+    async def _handle_send_native(self, intent: dict) -> tuple[str, dict]:
+        """
+        Direct RPC native-token transfer via backend.wallet.hot_signer.HotSigner
+        -- a deliberately separate path from the browser-extension approval
+        flow the rest of this file uses (see hot_signer.py's module
+        docstring). No popup, no human-in-the-loop; only the hot signer's
+        own enable flag / per-tx cap gate it.
+        """
+        hot_signer = getattr(self.app_state, "hot_signer", None) if self.app_state else None
+        if hot_signer is None:
+            return "Hot signer isn't wired up in this deployment.", {}
+
+        chain = (intent.get("send_chain") or "").strip().lower()
+        to_address = (intent.get("send_to_address") or "").strip()
+        amount_raw = (intent.get("send_amount") or "").strip()
+
+        if not chain or not to_address or not amount_raw:
+            missing = []
+            if not chain:
+                missing.append("chain")
+            if not to_address:
+                missing.append("destination address")
+            if not amount_raw:
+                missing.append("amount")
+            return f"I need the {', '.join(missing)} to send this -- give me all three (e.g. \"send 0.05 to 0xabc... on base\").", {}
+
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            return f"'{amount_raw}' isn't a valid amount.", {}
+
+        try:
+            result = await hot_signer.send_native(chain, to_address, amount)
+        except HotSignerDisabled as exc:
+            return str(exc), {}
+        except HotSignerError as exc:
+            return f"Send failed: {exc}", {}
+
+        return (
+            f"Sent {result.amount_native} native token on {result.chain} to {result.to_address}. "
+            f"tx: {result.tx_hash}",
+            {"tx_hash": result.tx_hash, "chain": result.chain, "to": result.to_address, "amount": result.amount_native},
         )
 
     async def _handle_batch_turn(self, session: ChatSession, tx_batch: Any, text: str) -> tuple[str, dict]:

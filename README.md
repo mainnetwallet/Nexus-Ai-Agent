@@ -124,6 +124,7 @@ Phase 1 (working, tested backbone) সম্পূর্ণ। **Phase 2 চল�
 | 15 | MCP Core | ✅ |
 | 16 | Social MCP connectors (X, Discord, Gmail) | ✅ |
 | 17 | AI Model Manager (multi-provider, smart routing, fallback) | ✅ |
+| 18 | Hot Signer — direct RPC native-token send from Chat (burner wallets) | ✅ |
 
 ### মূল Feature গুলো এক নজরে
 
@@ -162,6 +163,13 @@ Phase 1 (working, tested backbone) সম্পূর্ণ। **Phase 2 চল�
   resume করলে সেই step থেকেই আবার চলা শুরু হয় — কাজের অগ্রগতি হারায় না। Bare `"pause"`/`"resume"` (কোনো
   task না বলে) আগের মতোই পুরো agent worker-কে pause/resume করে, behavior অপরিবর্তিত। REST endpoints:
   `POST /api/tasks/{id}/pause`, `POST /api/tasks/{id}/resume`, `POST /api/tasks/{id}/cancel`।
+- **Hot Signer (direct RPC native transfer)** — Chat-এ শুধু address আর chain বললেই ("0.05 base-এ
+  0xabc...-তে পাঠাও") native token সরাসরি sign+broadcast হয়ে যায়, কোনো approval popup ছাড়াই।
+  এটা browser-extension wallet flow থেকে সম্পূর্ণ আলাদা, opt-in module
+  (`backend/wallet/hot_signer.py`) — default disabled, শুধু burner/bot wallet-এর জন্য বানানো।
+  চালু করতে `.env`-এ `HOT_SIGNER_ENABLED=true` আর `HOT_SIGNER_PRIVATE_KEY=0x...` সেট করুন; চাইলে
+  `HOT_SIGNER_MAX_NATIVE_VALUE` দিয়ে প্রতি-transaction cap-ও দেওয়া যায়। REST:
+  `POST /api/wallets/hot-signer/send`।
 
 বিস্তারিত জানতে দেখুন `CHANGELOG.md` (প্রতিটা ধাপে কী শিপ হয়েছে) এবং `docs/ARCHITECTURE.md` (WebSocket layer, Task Scheduler, AI Decision Engine-এর data-flow লেভেলের লেখা)।
 
@@ -314,10 +322,14 @@ docker compose up --build
 - Wallet approvals default to **manual** (`WALLET_REQUIRE_MANUAL_APPROVAL=true`). Only
   relax this for specific, allowlisted contracts and a USD cap you're comfortable
   with, and only after you've watched the agent operate safely for a while.
-- No seed phrase or private key ever passes through this codebase. If you later wire
-  in a signing key (e.g. for a separate scripted/burner-wallet flow outside the
-  browser), keep that entirely out of `wallet/manager.py`'s scope and encrypt it at
-  rest — this module is deliberately UI-automation-only.
+- No seed phrase or private key ever passes through `wallet/manager.py` or
+  `wallet/registry.py` — those stay UI-automation-only. A separate, opt-in
+  **hot signer** (`backend/wallet/hot_signer.py`) exists for scripted/burner-wallet
+  native transfers: it signs+broadcasts directly via JSON-RPC with no approval
+  popup. Disabled by default (`HOT_SIGNER_ENABLED=false`); the key comes only from
+  `HOT_SIGNER_PRIVATE_KEY` in the environment, is never written to the DB or logs,
+  and every send still gets recorded to the wallet activity log. Only point this at
+  a burner wallet — there is no human-in-the-loop step once it's enabled.
 - Set `API_AUTH_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS` before exposing this beyond
   localhost.
 

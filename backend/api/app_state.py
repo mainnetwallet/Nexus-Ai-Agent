@@ -8,6 +8,7 @@ from backend.wallet.manager import WalletManager
 from backend.wallet.registry import WalletRegistry
 
 if TYPE_CHECKING:
+    from backend.wallet.hot_signer import HotSigner
     from backend.browser.live_session import LiveSessionManager
     from backend.plugins.registry import PluginRegistry
     from backend.planner.agent_runtime import AgentRuntime
@@ -33,6 +34,7 @@ class AppState:
     skills: Optional["SkillService"] = None
     teach: Optional["TeachModeManager"] = None
     tx_batch: Optional["TxBatchManager"] = None
+    hot_signer: Optional["HotSigner"] = None
     mcp: Optional["MCPManager"] = None
     profile_registry: Optional["ProfileRegistry"] = None
     profiles: Optional["ProfileManager"] = None

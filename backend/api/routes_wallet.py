@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.app_state import state
 from backend.api.auth import require_auth
+from backend.wallet.hot_signer import HotSignerDisabled, HotSignerError
 from backend.wallet.import_utils import WalletImportError
 from backend.wallet.registry import WalletNotFoundError
 
@@ -62,6 +63,13 @@ class CreateGroupRequest(BaseModel):
 
 class SwitchNetworkRequest(BaseModel):
     network: str
+
+
+class SendNativeRequest(BaseModel):
+    chain: str
+    to_address: str
+    amount: float
+    wallet_id: Optional[str] = None
 
 
 # Legacy request shape kept for backward compatibility with existing callers
@@ -258,6 +266,32 @@ async def switch_network(wallet_id: str, req: SwitchNetworkRequest):
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result.get("error", "network switch failed"))
     return result
+
+
+@router.post("/hot-signer/send")
+async def hot_signer_send_native(req: SendNativeRequest):
+    """
+    Direct RPC native-token transfer -- bypasses the browser-extension
+    approval flow entirely (see backend/wallet/hot_signer.py). Disabled by
+    default; requires HOT_SIGNER_ENABLED + HOT_SIGNER_PRIVATE_KEY. Intended
+    for burner/bot wallets only.
+    """
+    hot_signer = state.hot_signer
+    if hot_signer is None:
+        raise HTTPException(status_code=503, detail="Hot signer not initialized")
+    try:
+        result = await hot_signer.send_native(req.chain, req.to_address, req.amount, wallet_id=req.wallet_id)
+    except HotSignerDisabled as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except HotSignerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "tx_hash": result.tx_hash,
+        "chain": result.chain,
+        "from_address": result.from_address,
+        "to_address": result.to_address,
+        "amount_native": result.amount_native,
+    }
 
 
 @router.get("/requests/pending")

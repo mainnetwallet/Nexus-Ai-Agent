@@ -191,6 +191,16 @@ class Settings(BaseSettings):
             "bsc": self.rpc_bsc,
         }
 
+    # --- Hot signer (direct RPC send) -----------------------------------
+    # Opt-in, separate from the browser-extension wallet flow above. When
+    # enabled, the backend itself holds a private key (env var only, never
+    # written to the DB/logs) and signs+broadcasts native transfers directly
+    # via JSON-RPC -- no human approval popup in the loop. Intended for
+    # burner/bot wallets only. See backend/wallet/hot_signer.py docstring.
+    hot_signer_enabled: bool = Field(default=False, description="Master switch for direct RPC native-transfer signing")
+    hot_signer_private_key: str = Field(default="", description="0x-prefixed private key of the burner/hot wallet. Env var only, never persisted to DB.")
+    hot_signer_max_native_value: float = Field(default=0.0, description="Max native-token amount per transfer (0 = unlimited). Simple per-tx cap since USD pricing isn't wired up here.")
+
     # --- Vision / OCR perception fallback ---
     vision_enabled: bool = Field(default=True, description="Allow the planner to fall back to a vision-LLM read of the screenshot")
     vision_min_elements_threshold: int = Field(default=3, description="If fewer than this many interactive elements are found in the DOM, trigger the vision/OCR fallback")

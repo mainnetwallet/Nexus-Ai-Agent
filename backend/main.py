@@ -47,6 +47,7 @@ from backend.planner.task_queue import TaskQueueService
 from backend.plugins.registry import PluginRegistry
 from backend.skills.library import SkillService
 from backend.skills.teach import TeachModeManager
+from backend.wallet.hot_signer import HotSigner
 from backend.wallet.manager import WalletManager
 from backend.wallet.registry import WalletRegistry
 from backend.wallet.tx_batch import TxBatchManager
@@ -100,6 +101,7 @@ async def lifespan(app: FastAPI):
     state.wallet = WalletManager()
     state.wallet_registry = WalletRegistry()
     state.tx_batch = TxBatchManager()
+    state.hot_signer = HotSigner(wallet_registry=state.wallet_registry)
 
     state.plugins = PluginRegistry(
         plugins_dir=settings.plugins_dir,
