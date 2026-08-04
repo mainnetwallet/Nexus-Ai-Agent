@@ -907,6 +907,8 @@ export const api = {
     remove: (id: string) => request<{ ok: boolean }>(`/api/profiles/${id}`, { method: "DELETE" }),
     clone: (id: string, newName: string) =>
       request<ProfileMeta>(`/api/profiles/${id}/clone`, { method: "POST", body: JSON.stringify({ new_name: newName }) }),
+    openInChrome: (id: string) =>
+      request<{ id: string; chrome_profile_dir: string; pid: number }>(`/api/profiles/${id}/open`, { method: "POST" }),
     rename: (id: string, newName: string) =>
       request<ProfileMeta>(`/api/profiles/${id}/rename`, { method: "POST", body: JSON.stringify({ new_name: newName }) }),
     import: (input: ImportProfileInput) =>

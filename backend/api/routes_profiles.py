@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,6 +8,7 @@ from pydantic import BaseModel
 
 from backend.api.app_state import state
 from backend.api.auth import require_auth
+from backend.browser.manual_session import ManualChromeSessionError, open_profile_in_chrome
 from backend.identity.detector import SUPPORTED_SERVICES
 from backend.identity.registry import ProfileError, ProfileNotFoundError
 
@@ -199,6 +201,35 @@ async def clone_profile(profile_id: str, req: CloneProfileRequest):
         raise HTTPException(status_code=404, detail="Profile not found") from exc
     except ProfileError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{profile_id}/open")
+async def open_profile_manually(profile_id: str):
+    """Launches the real, installed Chrome as a detached process against
+    this profile's own chrome_profile_dir -- same on-disk isolation as
+    "Add Chrome Profile" in Chrome itself, just outside the agent's control
+    so the person can look around/log in manually. Refuses while the agent
+    currently has this exact profile loaded for a running task, since
+    Chrome only allows one process on a given profile directory at a time."""
+    try:
+        profile = await _registry().get_profile(profile_id)
+    except ProfileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Profile not found") from exc
+
+    active_engine = _engine()
+    if active_engine is not None and active_engine.user_data_dir == profile.chrome_profile_dir:
+        raise HTTPException(
+            status_code=409,
+            detail="This profile is currently loaded by a running agent task -- "
+            "wait for it to finish before opening it manually.",
+        )
+
+    try:
+        pid = await asyncio.to_thread(open_profile_in_chrome, profile.chrome_profile_dir)
+    except ManualChromeSessionError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"id": profile.id, "chrome_profile_dir": profile.chrome_profile_dir, "pid": pid}
 
 
 # ---------------------------------------------------------------------- #

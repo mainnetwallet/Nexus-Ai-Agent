@@ -97,6 +97,15 @@ class BrowserEngine:
         self._register_page(page)
         logger.info("Browser engine started (channel=%s headless=%s)", self._channel, self._headless)
 
+    @property
+    def user_data_dir(self) -> str | None:
+        """The persistent Chrome profile directory this engine was launched
+        against, if any (None for a throwaway/incognito-style context). Lets
+        callers elsewhere -- e.g. the "Open in Chrome" manual session guard
+        in routes_profiles.py -- check whether a given profile is currently
+        locked by an active task without reaching into a private attribute."""
+        return self._user_data_dir
+
     async def stop(self) -> None:
         if self._context:
             await self._context.close()

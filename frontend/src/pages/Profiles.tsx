@@ -12,6 +12,7 @@ import {
   Mail,
   AtSign,
   MessageSquare,
+  ExternalLink,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -282,6 +283,18 @@ function ProfileDetails({
     }
   }
 
+  async function handleOpenInChrome() {
+    setBusy(true)
+    try {
+      await api.profiles.openInChrome(profile.id)
+      toast.push(`Opening ${profile.name} in Chrome…`, "success")
+    } catch (err) {
+      toast.push(err instanceof Error ? err.message : "Failed to open profile in Chrome", "error")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <Card>
       <CardContent className="flex flex-col gap-4 pt-5">
@@ -299,6 +312,9 @@ function ProfileDetails({
           </Button>
           <Button size="sm" variant="subtle" onClick={handleCheckSessions} disabled={busy}>
             <RefreshCw className="size-3.5" /> Check sessions
+          </Button>
+          <Button size="sm" variant="subtle" onClick={handleOpenInChrome} disabled={busy}>
+            <ExternalLink className="size-3.5" /> Open in Chrome
           </Button>
         </div>
         <div className="flex flex-wrap gap-2">

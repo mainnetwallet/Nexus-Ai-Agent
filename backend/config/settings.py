@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     browser_headless: bool = Field(default=True)
     browser_user_data_dir: Optional[str] = Field(default=None, description="Path to persistent Chrome profile")
     browser_slow_mo_ms: int = Field(default=0)
+    browser_executable_path: Optional[str] = Field(
+        default=None,
+        description="Full path to a Chrome/Chromium binary for the 'Open in Chrome' manual profile "
+        "session (backend/browser/manual_session.py). If unset, PATH and common per-OS install "
+        "locations are checked automatically.",
+    )
     browser_default_timeout_ms: int = Field(default=30_000)
 
     # --- Telegram ---
