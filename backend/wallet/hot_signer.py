@@ -26,6 +26,7 @@ Hard rules for this module:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -110,6 +111,30 @@ def _erc20_transfer_calldata(to_address: str, amount_raw: int) -> str:
 
 def _erc20_balance_of_calldata(owner_address: str) -> str:
     return "0x" + _ERC20_BALANCE_OF_SELECTOR + _encode_address_param(owner_address)
+
+
+_INSUFFICIENT_FUNDS_RE = re.compile(
+    r"insufficient funds[^,}]*?have\s+(\d+)[^,}]*?want\s+(\d+)", re.IGNORECASE
+)
+
+
+def _friendly_insufficient_funds_message(exc: Exception) -> Optional[str]:
+    """
+    If `exc` came from a JSON-RPC "insufficient funds ... have X want Y" error
+    (X/Y in wei), return a clean human-readable message with amounts
+    converted to native-token units. Returns None for any other error, so
+    callers fall back to the raw RPC error text unchanged.
+    """
+    match = _INSUFFICIENT_FUNDS_RE.search(str(exc))
+    if not match:
+        return None
+    have_wei, want_wei = int(match.group(1)), int(match.group(2))
+    have = have_wei / 1e18
+    want = want_wei / 1e18
+    return (
+        f"Insufficient funds: have {have:.9f}, need {want:.9f} "
+        "(transfer amount + gas). Top up the wallet and try again."
+    )
 
 
 def _find_loaded_key(address: str) -> Optional[str]:
@@ -763,5 +788,8 @@ class HotSigner:
         try:
             data = await rpc_post_with_fallback(rpc_candidates, payload)
         except Exception as exc:
+            friendly = _friendly_insufficient_funds_message(exc)
+            if friendly:
+                raise HotSignerError(friendly) from exc
             raise HotSignerError(f"RPC error on {method} (tried {len(rpc_candidates)} endpoint(s)): {exc}") from exc
         return data["result"]

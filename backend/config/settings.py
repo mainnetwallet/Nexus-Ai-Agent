@@ -213,37 +213,31 @@ class Settings(BaseSettings):
             "ethereum": [
                 self._alchemy_or("eth-mainnet", self.rpc_ethereum),
                 "https://ethereum-rpc.publicnode.com",
-                "https://rpc.ankr.com/eth",
                 "https://cloudflare-eth.com",
             ],
             "polygon": [
                 self._alchemy_or("polygon-mainnet", self.rpc_polygon),
                 "https://polygon-bor-rpc.publicnode.com",
-                "https://rpc.ankr.com/polygon",
                 "https://polygon.drpc.org",
             ],
             "arbitrum": [
                 self._alchemy_or("arb-mainnet", self.rpc_arbitrum),
                 "https://arbitrum-one-rpc.publicnode.com",
-                "https://rpc.ankr.com/arbitrum",
                 "https://arbitrum.drpc.org",
             ],
             "optimism": [
                 self._alchemy_or("opt-mainnet", self.rpc_optimism),
                 "https://optimism-rpc.publicnode.com",
-                "https://rpc.ankr.com/optimism",
                 "https://optimism.drpc.org",
             ],
             "base": [
                 self._alchemy_or("base-mainnet", self.rpc_base),
                 "https://base-rpc.publicnode.com",
-                "https://rpc.ankr.com/base",
                 "https://base.drpc.org",
             ],
             "bsc": [
                 self._alchemy_or("bnb-mainnet", self.rpc_bsc),
                 "https://bsc-rpc.publicnode.com",
-                "https://rpc.ankr.com/bsc",
                 "https://bsc.drpc.org",
             ],
         }

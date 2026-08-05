@@ -158,6 +158,14 @@ async def rpc_post_with_fallback(rpc_candidates: list[str], payload: dict, timeo
     """
     POST a JSON-RPC payload, trying each candidate URL in order until one
     responds successfully. Raises the last error if all fail.
+
+    Exception: if a candidate returns a deterministic, on-chain-state error
+    (e.g. "insufficient funds", "nonce too low") rather than an
+    endpoint-level problem (rate limit, auth, network), we stop immediately
+    instead of burning through the rest of the fallback list -- every other
+    RPC node will report the same on-chain state, so retrying elsewhere
+    can't fix it and only hides the real error behind whatever the last
+    endpoint happened to say (e.g. a 429).
     """
     last_error: Optional[Exception] = None
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -170,7 +178,28 @@ async def rpc_post_with_fallback(rpc_candidates: list[str], payload: dict, timeo
                     raise RuntimeError(f"RPC error from {rpc_url}: {data['error']}")
                 return data
             except Exception as exc:
+                if _is_deterministic_chain_error(exc):
+                    logger.warning(
+                        "chain_resolver: RPC candidate %s returned a deterministic chain error (%s), "
+                        "not trying further fallbacks", rpc_url, exc,
+                    )
+                    raise
                 logger.warning("chain_resolver: RPC candidate %s failed (%s), trying next", rpc_url, exc)
                 last_error = exc
                 continue
     raise last_error or RuntimeError("No RPC candidates available")
+
+
+_DETERMINISTIC_CHAIN_ERROR_MARKERS = (
+    "insufficient funds",
+    "nonce too low",
+    "already known",
+    "replacement transaction underpriced",
+)
+
+
+def _is_deterministic_chain_error(exc: Exception) -> bool:
+    """True if `exc` reflects on-chain state (same on every node) rather than
+    an endpoint-specific problem worth falling back away from."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _DETERMINISTIC_CHAIN_ERROR_MARKERS)
