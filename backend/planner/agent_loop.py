@@ -246,6 +246,13 @@ class AgentLoop:
 
     async def _execute_action(self, action: str, target: str, value: str) -> tuple[bool, str]:
         try:
+            target_lower = (target or "").lower()
+            is_verification = any(k in target_lower for k in ("verify", "human", "cloudflare", "turnstile", "captcha", "robot"))
+            if hasattr(self.engine, "auto_handle_security_verification"):
+                if is_verification:
+                    if await self.engine.auto_handle_security_verification():
+                        return True, "Security verification auto-solved"
+
             if action == StepAction.CLICK.value:
                 return await self.engine.smart_click(target), ""
             if action == StepAction.TYPE.value:

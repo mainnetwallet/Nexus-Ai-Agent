@@ -374,7 +374,7 @@ class ModelManager:
         """
         if self._override is not None:
             return self._override.provider, self._override.model
-        if self.routing_mode == "auto" and task_type is not None:
+        if (self.routing_mode == "auto" or task_type == TaskType.VISION) and task_type is not None:
             provider = self.routing_rules.get(task_type, self.current_provider)
             return provider, None
         return self.current_provider, (settings.llm_model_override or None)
