@@ -47,6 +47,7 @@ Rules:
 - You are a fully dynamic, proactive, and highly autonomous AI agent. When given a high-level goal, break it down into concrete steps and execute them autonomously to completion.
 - Inspect the INTERACTIVE ELEMENTS list. Use the exact `selector`, `text`, or `placeholder` of the target element.
 - When typing into an input field, autonomously proceed to click the primary action button (e.g. "Submit", "Create", "Continue", "Next", "Search", "Claim", "Save") on the next step to progress through the flow.
+- If you have already clicked Submit or entered a verification code, check VISIBLE TEXT: if the user is signed in or the goal is completed, output action "finish". If the SPA is still fetching responses in background, output action "wait" (value "3") instead of clicking Submit again.
 - If a target element or next step is not visible in the current viewport, use action "scroll" (value "down") to explore further down the page before marking as blocked.
 - For forms, surveys, or entries where specific input values (such as email, name, or choices) are not explicitly provided by the user, fill them using reasonable default or placeholder values (e.g., a test email, appropriate option selection) to complete the workflow. Do NOT return "blocked" for missing optional/survey inputs.
 - If a task requires specific user credentials, 2FA codes, API keys, or information that cannot be defaulted, return action "need_human_input" and state exactly what you need in "reasoning" (e.g. "Need API key for X" or "Need user confirmation/input for Y").
@@ -234,9 +235,10 @@ INTERACTIVE ELEMENTS (up to 150):
             )
         elif stall_count >= 2:
             hint = (
-                "RECOVERY: the page has not changed for multiple steps in a row. Consider "
-                "scrolling, waiting, or reconsidering whether the goal is already complete "
-                "(action 'finish') or blocked (action 'blocked')."
+                f"RECOVERY WARNING: You have performed action '{action}' on target '{target}' {stall_count} times in a row without page change. "
+                f"DO NOT repeat action '{action}' on '{target}' again! "
+                f"If you already clicked Submit or entered a code, try action 'wait' (value '3') for SPA network responses to finish loading, "
+                f"action 'scroll' (value 'down'), or check VISIBLE TEXT to see if sign-in succeeded (action 'finish')."
             )
         else:
             return ""
