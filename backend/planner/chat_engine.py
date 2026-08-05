@@ -368,6 +368,14 @@ _SEED_WORD_COUNTS = (12, 15, 18, 21, 24)
 # since addresses are an unambiguous pattern and money is on the line.
 _ETH_ADDRESS_RE = _re.compile(r"0x[0-9a-fA-F]{40}")
 
+# Used only to disambiguate a stale/abandoned task-batch turn (see
+# _handle_batch_turn): a plausible website/domain token, so "0.01 ETH to
+# 0xabc... on uniswap.org" still reads as a task-batch destination while
+# "wallet 1 theke 0x... e transfer koro" (address, no domain) does not.
+_DOMAIN_RE = _re.compile(
+    r"\b(?:[a-zA-Z0-9-]+\.)+(?:com|org|net|io|xyz|app|finance|eth|co|dev|so|fi)\b"
+)
+
 
 def _extract_addresses(text: str) -> list[str]:
     """All distinct 0x addresses in `text`, in first-seen order."""
@@ -1331,6 +1339,24 @@ class ChatEngine:
         website = (extraction.get("website") or "").strip()
         goal = (extraction.get("goal") or text).strip()
         if not website:
+            # A stale/abandoned task-batch draft (started earlier with
+            # "queue N transactions" and never finished or cancelled) would
+            # otherwise trap every later message here forever, asking for a
+            # website even when the message is clearly an unrelated direct
+            # wallet send (e.g. "wallet 1 theke ... transfer koro 0x...").
+            # Detect that case deterministically -- an 0x address with no
+            # recognizable website/domain token alongside it -- and drop
+            # the stale batch instead of blocking the user on it.
+            has_address = bool(_ETH_ADDRESS_RE.search(text))
+            has_domain = bool(_DOMAIN_RE.search(text))
+            if has_address and not has_domain:
+                tx_batch.cancel(session.id)
+                return (
+                    "That doesn't look like a destination for the pending task batch "
+                    "(no website in it), so I've cleared that stale batch. Please resend "
+                    "your wallet transfer message.",
+                    {},
+                )
             return "Which site or address should this one go to?", {}
 
         task_id = await self.queue.enqueue(website, goal, draft.wallet_label, notes="", priority=1)
