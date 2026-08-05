@@ -539,6 +539,40 @@ class ChatEngine:
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
 
+    async def _find_paused_task(self, session: ChatSession) -> Optional[Task]:
+        async with get_session() as db:
+            if session.last_task_id:
+                task = await db.get(Task, session.last_task_id)
+                if task and task.status == TaskStatus.PAUSED:
+                    return task
+            stmt = (
+                select(Task)
+                .where(Task.status == TaskStatus.PAUSED)
+                .order_by(Task.created_at.desc())
+                .limit(1)
+            )
+            result = await db.execute(stmt)
+            return result.scalars().first()
+
+    async def _resume_task_with_user_input(self, session: ChatSession, task: Task, text: str) -> tuple[str, dict]:
+        async with get_session() as db:
+            db_task = await db.get(Task, task.id)
+            if db_task:
+                existing_notes = db_task.notes or ""
+                db_task.notes = f"{existing_notes}\n[USER INPUT]: {text}".strip()
+                db_task.status = TaskStatus.QUEUED
+                await db.flush()
+
+        if self.queue:
+            await self.queue.resume_task(task.id)
+
+        session.last_task_id = task.id
+        reply = (
+            f"Received your input: '{text}'. "
+            f"Updated task notes and resuming task on {task.website or 'system'} (task_id={task.id[:8]})."
+        )
+        return reply, {"task_id": task.id, "resumed": True, "input": text}
+
     @staticmethod
     def _history_prompt(context: str, text: str) -> str:
         """Plain transcript shape for free-text LLM calls (e.g. the
@@ -620,6 +654,17 @@ class ChatEngine:
                 reply, meta = f"Something went wrong queuing that: {exc}", {}
             await self._append(session.id, ChatRole.ASSISTANT, reply, category="task", meta=meta)
             return {"session_id": session.id, "reply": reply, "category": "task", "action": "select_profile", "meta": meta}
+
+        # Human-in-the-Loop Interception: check if there is a paused task waiting for user input
+        paused_task = await self._find_paused_task(session)
+        if paused_task is not None and not text.strip().startswith(("/task", "cancel", "pause", "stop", "retry")):
+            try:
+                reply, meta = await self._resume_task_with_user_input(session, paused_task, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Resume task with user input failed")
+                reply, meta = f"Something went wrong resuming the task: {exc}", {}
+            await self._append(session.id, ChatRole.ASSISTANT, reply, category="agent_command", meta=meta)
+            return {"session_id": session.id, "reply": reply, "category": "agent_command", "action": "resume_task", "meta": meta}
 
         # Wallet secret entry: intercepted BEFORE intent classification --
         # this message either answers a pending "paste your seed phrase /

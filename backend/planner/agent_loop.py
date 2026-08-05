@@ -38,6 +38,7 @@ class StepAction(str, Enum):
     WAIT = "wait"
     UPLOAD = "upload"
     FINISH = "finish"
+    NEED_HUMAN_INPUT = "need_human_input"
     BLOCKED = "blocked"
     WALLET_POPUP = "wallet_popup"
     # Off-page work the planner can't do via click/type/navigate: filesystem,
@@ -147,6 +148,25 @@ class AgentLoop:
             if action == StepAction.FINISH.value:
                 outcome.status = "succeeded"
                 outcome.summary = reasoning or "Goal reported complete by planner."
+                break
+
+            if action == StepAction.NEED_HUMAN_INPUT.value:
+                outcome.status = "paused"
+                outcome.summary = reasoning or "Agent needs user input/access to continue."
+                shot = await self.engine.screenshot(name_hint=f"need_input_step{step_index}")
+                step_result = StepResult(
+                    index=step_index,
+                    action=action,
+                    target=target,
+                    value=value,
+                    reasoning=reasoning,
+                    success=False,
+                    screenshot_path=shot,
+                    note=f"NEED_HUMAN_INPUT: {reasoning}",
+                )
+                outcome.steps.append(step_result)
+                if self.on_step:
+                    await self.on_step(step_result)
                 break
 
             if action == StepAction.BLOCKED.value:
