@@ -146,6 +146,7 @@ async def lifespan(app: FastAPI):
     await state.mcp.start()
 
     state.profile_registry = ProfileRegistry(DATA_DIR)
+    await state.profile_registry.reset_stale_in_use_profiles()
     state.profiles = ProfileManager(state.profile_registry)
     state.pending_profile = PendingProfileManager()
 

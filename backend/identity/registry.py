@@ -77,6 +77,26 @@ class ProfileRegistry:
         self.fs = ProfileFilesystem(Path(data_dir) / "browser_profiles")
 
     # ------------------------------------------------------------------ #
+    # Startup Cleanup
+    # ------------------------------------------------------------------ #
+    async def reset_stale_in_use_profiles(self) -> int:
+        """
+        Clears stale 'in_use' status flags left over from previous process
+        crashes or hard shutdowns so profiles can be immediately reused.
+        """
+        async with get_session() as session:
+            stmt = (
+                update(ProfileRecord)
+                .where(ProfileRecord.status == ProfileStatus.IN_USE)
+                .values(status=ProfileStatus.READY)
+            )
+            res = await session.execute(stmt)
+            count = res.rowcount
+            if count > 0:
+                logger.info("Reset %d stale in_use browser profile(s) to READY on startup", count)
+            return count
+
+    # ------------------------------------------------------------------ #
     # CRUD
     # ------------------------------------------------------------------ #
     async def create_profile(

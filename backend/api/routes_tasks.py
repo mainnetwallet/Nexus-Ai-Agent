@@ -22,6 +22,7 @@ class CreateTaskRequest(BaseModel):
     website: str
     goal: str
     wallet_label: Optional[str] = None
+    profile_label: Optional[str] = None
     notes: str = ""
     priority: int = 0
     scheduled_for: Optional[dt.datetime] = None
@@ -30,7 +31,13 @@ class CreateTaskRequest(BaseModel):
 @router.post("")
 async def create_task(req: CreateTaskRequest):
     task_id = await state.queue.enqueue(
-        req.website, req.goal, req.wallet_label, req.notes, req.priority, req.scheduled_for
+        req.website,
+        req.goal,
+        req.wallet_label,
+        req.notes,
+        req.priority,
+        req.scheduled_for,
+        profile_label=req.profile_label,
     )
     return {"id": task_id}
 
