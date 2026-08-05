@@ -327,6 +327,18 @@ class LLMClient:
                         )
                     return text
                 except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code in (404, 400) and candidate_model != DEFAULT_MODELS.get(self.provider, ""):
+                        default_model = DEFAULT_MODELS.get(self.provider, "")
+                        if default_model and candidate_model != default_model:
+                            logger.warning(
+                                "Model %r not found/supported on provider=%s (HTTP %d). Falling back to default model %r",
+                                candidate_model,
+                                self.provider,
+                                exc.response.status_code,
+                                default_model,
+                            )
+                            candidates.insert(candidate_index + 1, default_model)
+                            break
                     if exc.response.status_code != 429:
                         logger.error(
                             "Non-rate-limit error on model=%s (provider=%s)%s: HTTP %d: %s",
