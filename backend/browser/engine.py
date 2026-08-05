@@ -230,6 +230,12 @@ class BrowserEngine:
         elif text_clean.startswith(("button:", "input:", "a:")):
             raw_text = text_clean.split(":", 1)[1].strip()
 
+        # If the target is a security verification challenge, invoke auto_handle_security_verification FIRST
+        is_verification = any(k in text_clean.lower() for k in ("verify", "human", "cloudflare", "turnstile", "captcha", "robot"))
+        if is_verification:
+            if await self.auto_handle_security_verification():
+                return True
+
         def _is_valid_css(sel: str) -> bool:
             if any(c in sel for c in ['"', "'", "\n", "\r"]):
                 return "[" in sel and "]" in sel
