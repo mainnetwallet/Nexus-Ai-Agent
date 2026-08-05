@@ -429,10 +429,18 @@ class TaskQueueService:
 
         async def on_step(step_result):
             if self.notify_fn:
-                await self.notify_fn(
+                status_str = 'ok' if step_result.success else 'FAILED'
+                msg = (
                     f"[{task.website}] step {step_result.index}: {step_result.action} "
-                    f"'{step_result.target}' -> {'ok' if step_result.success else 'FAILED'}"
+                    f"'{step_result.target}' -> {status_str}"
                 )
+                await self.notify_fn(msg)
+                # Send detailed error notification so user can reply with fix advice
+                if not step_result.success and step_result.note:
+                    await self.notify_fn(
+                        f"⚠️ Error detail: {step_result.note}. "
+                        f"Reply in chat with fix advice to retry (e.g. 'click Join button instead' or 'scroll down')."
+                    )
             if self.activity_fn:
                 await self.activity_fn(
                     {
@@ -573,6 +581,8 @@ class TaskQueueService:
                 db_task = await session.get(Task, task.id)
                 if outcome.status == "succeeded":
                     db_task.status = TaskStatus.SUCCEEDED
+                elif outcome.status == "paused":
+                    db_task.status = TaskStatus.PAUSED
                 elif outcome.status == "cancelled" or task.id in self._cancelled_ids:
                     db_task.status = TaskStatus.CANCELLED
                     self._cancelled_ids.discard(task.id)
