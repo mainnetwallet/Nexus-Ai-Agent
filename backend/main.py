@@ -217,6 +217,26 @@ async def _broadcast_notify(message: str) -> None:
     await broadcast(message)
     logger.info("notify: %s", message)
 
+    if state.chat is not None:
+        try:
+            from backend.database.models import ChatRole, ChatSession
+            from backend.database.session import get_session
+            from sqlalchemy import select
+
+            async with get_session() as db:
+                stmt = select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(1)
+                res = await db.execute(stmt)
+                session = res.scalars().first()
+                if session:
+                    await state.chat._append(
+                        session.id,
+                        ChatRole.ASSISTANT,
+                        message,
+                        category="agent_command",
+                    )
+        except Exception:
+            logger.exception("Failed to mirror notify message into chat session")
+
 
 async def _broadcast_plugin_event(payload: str) -> None:
     from backend.api.routes_plugins import broadcast

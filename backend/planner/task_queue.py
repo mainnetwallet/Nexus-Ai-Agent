@@ -441,6 +441,11 @@ class TaskQueueService:
                         f"⚠️ Error detail: {step_result.note}. "
                         f"Reply in chat with fix advice to retry (e.g. 'click Join button instead' or 'scroll down')."
                     )
+                # If this is a NEED_HUMAN_INPUT pause, also send a clear prompt to the chat so the user sees it.
+                if step_result.note and step_result.note.startswith('NEED_HUMAN_INPUT'):
+                    await self.notify_fn(
+                        f"🛑 Task paused: {step_result.note}. Please provide the required information in chat to resume."
+                    )
             if self.activity_fn:
                 await self.activity_fn(
                     {

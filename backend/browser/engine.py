@@ -274,17 +274,22 @@ class BrowserEngine:
 
         strategies = []
         if text_clean and _is_valid_css(text_clean):
+            # Ensure we prefer visible elements over hidden DOM inputs (e.g. <input type="hidden">)
+            strategies.append(lambda: self.page.locator(f"{text_clean}:visible"))
             strategies.append(lambda: self.page.locator(text_clean))
         if text_clean:
             strategies.extend([
                 lambda: self.page.get_by_placeholder(text_clean),
                 lambda: self.page.get_by_label(text_clean),
                 lambda: self.page.get_by_role("textbox", name=text_clean),
-                lambda: self.page.locator(f"input[placeholder*='{text_clean}'], textarea[placeholder*='{text_clean}']"),
-                lambda: self.page.locator(f"input[name*='{text_clean}'], input[id*='{text_clean}']"),
+                lambda: self.page.locator(f"input[placeholder*='{text_clean}']:visible, textarea[placeholder*='{text_clean}']:visible"),
+                lambda: self.page.locator(f"input[name*='{text_clean}']:visible, input[id*='{text_clean}']:visible"),
+                lambda: self.page.locator(f"[aria-label*='{text_clean}']:visible"),
             ])
-        # Ultimate fallback: if only 1 visible input element exists, type into it
-        strategies.append(lambda: self.page.locator("input:visible, textarea:visible").first)
+        # Fallback for Google Forms / SPAs using contenteditable or custom textboxes
+        strategies.extend([
+            lambda: self.page.locator("input:visible, textarea:visible, [contenteditable='true']:visible, div[role='textbox']:visible").first,
+        ])
 
         for build_locator in strategies:
             try:
