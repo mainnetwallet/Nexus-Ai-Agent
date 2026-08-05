@@ -429,52 +429,99 @@ class BrowserEngine:
 
     async def auto_handle_security_verification(self) -> bool:
         """
-        Detects and automatically solves Cloudflare Turnstile / "Verify you are human"
-        security verification challenges across main frame and child iframes.
+        Detects and automatically solves ANY "Verify you are human" / security verification
+        challenge across main frame and all child iframes (Cloudflare Turnstile, reCAPTCHA,
+        hCaptcha, Datadome, Imperva, Geetest, Arkose, and generic security checkboxes).
         """
         try:
-            text = (await self.extract_visible_text(max_chars=2000)).lower()
+            text = (await self.extract_visible_text(max_chars=3000)).lower()
             url = self.page.url.lower()
-            has_challenge = any(k in text or k in url for k in (
+
+            challenge_keywords = (
                 "verify you are human",
+                "verify that you are human",
+                "verify you're human",
+                "confirm you are human",
+                "i'm not a robot",
+                "i am not a robot",
+                "i am human",
+                "press & hold",
+                "press and hold",
+                "human verification",
+                "security verification",
+                "security check",
                 "performing security verification",
-                "challenges.cloudflare.com",
                 "just a moment",
+                "checking your browser",
+                "please verify",
+                "captcha",
                 "turnstile",
-                "security verification"
-            ))
+                "recaptcha",
+                "hcaptcha",
+                "datadome",
+                "arkose",
+                "funcaptcha",
+                "imperva",
+                "perimeterx",
+            )
+            has_challenge = any(k in text or k in url for k in challenge_keywords)
 
             if not has_challenge and len(self.page.frames) <= 1:
                 return False
 
+            # Strategy 1: Iterate through main page and all child iframes for verification elements
             for frame in self.page.frames:
                 try:
                     locators = [
                         frame.locator('input[type="checkbox"]'),
-                        frame.locator('.ctp-checkbox-label'),
-                        frame.locator('label.cb-lb'),
-                        frame.locator('#challenge-stage'),
-                        frame.locator('.mark'),
-                        frame.get_by_text("Verify you are human"),
+                        frame.locator('#recaptcha-anchor, .recaptcha-checkbox-border'),
+                        frame.locator('.ctp-checkbox-label, label.cb-lb, #challenge-stage, .mark'),
+                        frame.locator('.geetest_radar_tip, .hcaptcha-checkbox, #checkbox, #verify-button, .geetest_btn'),
+                        frame.get_by_text("Verify you are human", exact=False),
+                        frame.get_by_text("Verify you're human", exact=False),
+                        frame.get_by_text("I'm not a robot", exact=False),
+                        frame.get_by_text("I am human", exact=False),
+                        frame.get_by_text("Press & Hold", exact=False),
+                        frame.get_by_text("Click to verify", exact=False),
+                        frame.get_by_text("Verify", exact=True),
                     ]
                     for loc in locators:
                         first = loc.first
                         if await first.is_visible(timeout=500):
-                            logger.info("Cloudflare / Security verification challenge detected in frame %s. Clicking checkbox...", frame.url)
+                            logger.info("Security verification / human challenge detected in frame %s. Executing click...", frame.url)
                             await first.scroll_into_view_if_needed()
+
+                            # Press & Hold handling (Datadome / Imperva / PerimeterX)
+                            loc_text = (await first.inner_text() if hasattr(first, 'inner_text') else "").lower()
+                            if "press" in loc_text and "hold" in loc_text:
+                                box = await first.bounding_box()
+                                if box:
+                                    await self.page.mouse.move(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                                    await self.page.mouse.down()
+                                    await asyncio.sleep(3.5)
+                                    await self.page.mouse.up()
+                                    await self._settle(ms=2500)
+                                    return True
+
                             await first.click(force=True, timeout=2000)
                             await self._settle(ms=2500)
                             return True
                 except Exception:
                     continue
 
+            # Strategy 2: If challenge iframe exists on main page, click center / checkbox of iframe
             if has_challenge:
-                iframe_loc = self.page.locator('iframe[src*="challenges.cloudflare.com"], iframe[title*="Turnstile"], iframe[title*="Cloudflare"]').first
+                iframe_loc = self.page.locator(
+                    'iframe[src*="cloudflare"], iframe[title*="Turnstile"], iframe[title*="Cloudflare"], '
+                    'iframe[src*="recaptcha"], iframe[title*="reCAPTCHA"], iframe[src*="hcaptcha"], '
+                    'iframe[title*="hCaptcha"], iframe[title*="security"], iframe[title*="challenge"], '
+                    'iframe[src*="arkose"], iframe[src*="funcaptcha"]'
+                ).first
                 if await iframe_loc.is_visible(timeout=1000):
-                    logger.info("Clicking Turnstile iframe element via coordinates...")
+                    logger.info("Clicking security challenge iframe element via coordinates...")
                     box = await iframe_loc.bounding_box()
                     if box:
-                        await self.page.mouse.click(box["x"] + 30, box["y"] + box["height"] / 2)
+                        await self.page.mouse.click(box["x"] + min(30, box["width"]/2), box["y"] + box["height"] / 2)
                         await self._settle(ms=2500)
                         return True
         except Exception as exc:
