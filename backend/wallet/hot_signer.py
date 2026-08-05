@@ -671,8 +671,11 @@ class HotSigner:
         }
 
         signed = account.sign_transaction(tx)
+        raw_tx_hex = signed.raw_transaction.hex()
+        if not raw_tx_hex.startswith("0x"):
+            raw_tx_hex = "0x" + raw_tx_hex
         tx_hash = await self._rpc_call(
-            rpc_candidates, "eth_sendRawTransaction", [signed.raw_transaction.hex()]
+            rpc_candidates, "eth_sendRawTransaction", [raw_tx_hex]
         )
 
         logger.info(
@@ -933,8 +936,11 @@ class HotSigner:
         }
 
         signed = account.sign_transaction(tx)
+        raw_tx_hex = signed.raw_transaction.hex()
+        if not raw_tx_hex.startswith("0x"):
+            raw_tx_hex = "0x" + raw_tx_hex
         tx_hash = await self._rpc_call(
-            rpc_candidates, "eth_sendRawTransaction", [signed.raw_transaction.hex()]
+            rpc_candidates, "eth_sendRawTransaction", [raw_tx_hex]
         )
 
         logger.info(

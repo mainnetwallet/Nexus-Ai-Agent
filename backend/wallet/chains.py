@@ -32,7 +32,7 @@ _CHAIN_ALIASES: dict[str, str] = {
     "op mainnet": "optimism", "op": "optimism", "optimism mainnet": "optimism",
     "eth mainnet": "ethereum", "eth": "ethereum", "ethereum mainnet": "ethereum",
     "mainnet": "ethereum",
-    "matic": "polygon", "polygon mainnet": "polygon", "polygon pos": "polygon",
+    "pol": "polygon", "pol mainnet": "polygon", "matic": "polygon", "polygon mainnet": "polygon", "polygon pos": "polygon",
     "arb": "arbitrum", "arbitrum one": "arbitrum", "arbitrum mainnet": "arbitrum",
     "base mainnet": "base",
     "bnb": "bsc", "bnb chain": "bsc", "binance smart chain": "bsc", "bsc mainnet": "bsc",
