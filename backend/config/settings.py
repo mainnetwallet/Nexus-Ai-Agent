@@ -173,6 +173,8 @@ class Settings(BaseSettings):
 
     # --- Wallet manager: read-only RPC endpoints per network, used only for
     # address-balance lookups and chain-id checks. No key material involved. ---
+    alchemy_api_key: str = Field(default="", description="Alchemy API key -- used to build primary RPC URLs for all chains below when set. Set via .env, never commit the raw key to source.")
+
     rpc_ethereum: str = Field(default="https://eth.llamarpc.com")
     rpc_polygon: str = Field(default="https://polygon-rpc.com")
     rpc_arbitrum: str = Field(default="https://arb1.arbitrum.io/rpc")
@@ -180,16 +182,22 @@ class Settings(BaseSettings):
     rpc_base: str = Field(default="https://mainnet.base.org")
     rpc_bsc: str = Field(default="https://bsc-dataseed.binance.org")
 
+    def _alchemy_or(self, subdomain: str, fallback: str) -> str:
+        """Build an Alchemy RPC URL if alchemy_api_key is set, else use the plain public fallback."""
+        if self.alchemy_api_key:
+            return f"https://{subdomain}.g.alchemy.com/v2/{self.alchemy_api_key}"
+        return fallback
+
     @property
     def rpc_endpoints(self) -> dict[str, str]:
-        """Primary (official) RPC per chain -- kept for backward compat."""
+        """Primary RPC per chain -- Alchemy if alchemy_api_key is set, else public default."""
         return {
-            "ethereum": self.rpc_ethereum,
-            "polygon": self.rpc_polygon,
-            "arbitrum": self.rpc_arbitrum,
-            "optimism": self.rpc_optimism,
-            "base": self.rpc_base,
-            "bsc": self.rpc_bsc,
+            "ethereum": self._alchemy_or("eth-mainnet", self.rpc_ethereum),
+            "polygon": self._alchemy_or("polygon-mainnet", self.rpc_polygon),
+            "arbitrum": self._alchemy_or("arb-mainnet", self.rpc_arbitrum),
+            "optimism": self._alchemy_or("opt-mainnet", self.rpc_optimism),
+            "base": self._alchemy_or("base-mainnet", self.rpc_base),
+            "bsc": self._alchemy_or("bnb-mainnet", self.rpc_bsc),
         }
 
     @property
@@ -203,37 +211,37 @@ class Settings(BaseSettings):
         """
         return {
             "ethereum": [
-                self.rpc_ethereum,
+                self._alchemy_or("eth-mainnet", self.rpc_ethereum),
                 "https://ethereum-rpc.publicnode.com",
                 "https://rpc.ankr.com/eth",
                 "https://cloudflare-eth.com",
             ],
             "polygon": [
-                self.rpc_polygon,
+                self._alchemy_or("polygon-mainnet", self.rpc_polygon),
                 "https://polygon-bor-rpc.publicnode.com",
                 "https://rpc.ankr.com/polygon",
                 "https://polygon.drpc.org",
             ],
             "arbitrum": [
-                self.rpc_arbitrum,
+                self._alchemy_or("arb-mainnet", self.rpc_arbitrum),
                 "https://arbitrum-one-rpc.publicnode.com",
                 "https://rpc.ankr.com/arbitrum",
                 "https://arbitrum.drpc.org",
             ],
             "optimism": [
-                self.rpc_optimism,
+                self._alchemy_or("opt-mainnet", self.rpc_optimism),
                 "https://optimism-rpc.publicnode.com",
                 "https://rpc.ankr.com/optimism",
                 "https://optimism.drpc.org",
             ],
             "base": [
-                self.rpc_base,
+                self._alchemy_or("base-mainnet", self.rpc_base),
                 "https://base-rpc.publicnode.com",
                 "https://rpc.ankr.com/base",
                 "https://base.drpc.org",
             ],
             "bsc": [
-                self.rpc_bsc,
+                self._alchemy_or("bnb-mainnet", self.rpc_bsc),
                 "https://bsc-rpc.publicnode.com",
                 "https://rpc.ankr.com/bsc",
                 "https://bsc.drpc.org",
