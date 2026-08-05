@@ -573,6 +573,7 @@ class HotSigner:
         amount_native: float,
         wallet_id: Optional[str] = None,
         from_address: Optional[str] = None,
+        nonce_override: Optional[int] = None,
     ) -> NativeTransferResult:
         """
         Send `amount_native` of the chain's native currency to `to_address`
@@ -582,6 +583,14 @@ class HotSigner:
         `from_address` picks which loaded hot signer key to sign with (see
         list_hot_signers()); omit it to use whichever key is currently
         active (settings.hot_signer_active_address / set_active_hot_signer()).
+
+        `nonce_override`: use this nonce instead of querying the RPC's
+        "pending" count. Callers doing multiple sequential sends from the
+        same from-address (e.g. send_native_batch) must pass this, because
+        public RPC nodes can lag updating their pending-nonce view right
+        after a broadcast, causing a fresh "pending" query on the next leg
+        to return a stale/duplicate nonce ("replacement transaction
+        underpriced" / "nonce too low").
         """
         private_key = _require_enabled(from_address)
 
@@ -620,9 +629,13 @@ class HotSigner:
         from_address = account.address
         amount_wei = round(amount_native * 1e18)
 
-        nonce = await self._rpc_call(
-            rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
-        )
+        if nonce_override is not None:
+            nonce_int = nonce_override
+        else:
+            nonce = await self._rpc_call(
+                rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
+            )
+            nonce_int = int(nonce, 16)
         gas_price = _bump(int(await self._rpc_call(rpc_candidates, "eth_gasPrice", []), 16))
         gas_limit = _bump(await self._estimate_native_gas_with_fallback(
             rpc_candidates, from_address, to_address, amount_wei
@@ -630,7 +643,7 @@ class HotSigner:
 
         tx = {
             "chainId": chain.chain_id_int,
-            "nonce": int(nonce, 16),
+            "nonce": nonce_int,
             "to": to_address,
             "value": amount_wei,
             "gas": gas_limit,
@@ -687,14 +700,40 @@ class HotSigner:
         from the same from-address at once would race on the same nonce),
         and one leg failing does not stop the rest -- every pair gets a
         BatchLegResult either way.
+
+        Nonces are tracked locally per from-address (fetched once, then
+        incremented after each successful broadcast) instead of being
+        re-queried from the RPC's "pending" count on every leg. Public RPC
+        nodes can lag updating that view immediately after a broadcast,
+        which previously made consecutive legs from the same address reuse
+        a stale nonce ("replacement transaction underpriced", then "nonce
+        too low" on the following leg).
         """
         pairs = _pair_addresses(from_addresses, to_addresses)
         legs: list[BatchLegResult] = []
+        next_nonce: dict[str, int] = {}
         for from_addr, to_addr in pairs:
             try:
+                nonce_override = next_nonce.get(from_addr)
+                if nonce_override is None:
+                    private_key = _require_enabled(from_addr)
+                    account = Account.from_key(private_key)
+                    resolved_from = account.address
+                    chain = chain_by_key(chain_key)
+                    if chain is not None:
+                        rpc_candidates = get_rpc_candidates(chain)
+                    else:
+                        _, rpc_candidates = await resolve_chain(chain_key)
+                    nonce_hex = await self._rpc_call(
+                        rpc_candidates, "eth_getTransactionCount", [resolved_from, "pending"]
+                    )
+                    nonce_override = int(nonce_hex, 16)
+
                 result = await self.send_native(
                     chain_key, to_addr, amount_native, wallet_id=wallet_id, from_address=from_addr,
+                    nonce_override=nonce_override,
                 )
+                next_nonce[from_addr] = nonce_override + 1
                 legs.append(BatchLegResult(from_addr, to_addr, ok=True, tx_hash=result.tx_hash))
             except HotSignerError as exc:
                 legs.append(BatchLegResult(from_addr, to_addr, ok=False, error=str(exc)))
@@ -714,15 +753,34 @@ class HotSigner:
         wallet_id: Optional[str] = None,
     ) -> BatchTransferResult:
         """ERC20 counterpart of send_native_batch -- same pairing rules, same
-        sequential/one-bad-leg-does-not-stop-the-rest behavior."""
+        sequential/one-bad-leg-does-not-stop-the-rest behavior, and same
+        locally-tracked-nonce fix (see send_native_batch docstring)."""
         pairs = _pair_addresses(from_addresses, to_addresses)
         legs: list[BatchLegResult] = []
+        next_nonce: dict[str, int] = {}
         for from_addr, to_addr in pairs:
             try:
+                nonce_override = next_nonce.get(from_addr)
+                if nonce_override is None:
+                    private_key = _require_enabled(from_addr)
+                    account = Account.from_key(private_key)
+                    resolved_from = account.address
+                    chain = chain_by_key(chain_key)
+                    if chain is not None:
+                        rpc_candidates = get_rpc_candidates(chain)
+                    else:
+                        _, rpc_candidates = await resolve_chain(chain_key)
+                    nonce_hex = await self._rpc_call(
+                        rpc_candidates, "eth_getTransactionCount", [resolved_from, "pending"]
+                    )
+                    nonce_override = int(nonce_hex, 16)
+
                 result = await self.send_token(
                     chain_key, token_address, to_addr, amount_tokens,
                     decimals=decimals, wallet_id=wallet_id, from_address=from_addr,
+                    nonce_override=nonce_override,
                 )
+                next_nonce[from_addr] = nonce_override + 1
                 legs.append(BatchLegResult(from_addr, to_addr, ok=True, tx_hash=result.tx_hash))
             except HotSignerError as exc:
                 legs.append(BatchLegResult(from_addr, to_addr, ok=False, error=str(exc)))
@@ -740,6 +798,7 @@ class HotSigner:
         decimals: Optional[int] = None,
         wallet_id: Optional[str] = None,
         from_address: Optional[str] = None,
+        nonce_override: Optional[int] = None,
     ) -> TokenTransferResult:
         """
         Send `amount_tokens` of an ERC20 token at `token_address` to
@@ -750,6 +809,9 @@ class HotSigner:
         `decimals` is auto-read from the token contract (decimals()) if not
         given -- most tokens implement it, but a few non-standard ones
         don't, in which case pass it explicitly.
+
+        `nonce_override`: see send_native -- send_token_batch passes this to
+        avoid re-querying a possibly-stale "pending" nonce between legs.
 
         Note: hot_signer_max_native_value only caps native-currency sends.
         There's no per-token USD cap here (no price oracle wired up), so
@@ -813,9 +875,13 @@ class HotSigner:
 
         calldata = _erc20_transfer_calldata(to_address, amount_raw)
 
-        nonce = await self._rpc_call(
-            rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
-        )
+        if nonce_override is not None:
+            nonce_int = nonce_override
+        else:
+            nonce = await self._rpc_call(
+                rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
+            )
+            nonce_int = int(nonce, 16)
         gas_price = _bump(int(await self._rpc_call(rpc_candidates, "eth_gasPrice", []), 16))
         gas_limit = _bump(await self._estimate_gas_with_fallback(
             rpc_candidates, from_address, token_address, calldata
@@ -823,7 +889,7 @@ class HotSigner:
 
         tx = {
             "chainId": chain.chain_id_int,
-            "nonce": int(nonce, 16),
+            "nonce": nonce_int,
             "to": token_address,
             "value": 0,
             "gas": gas_limit,
