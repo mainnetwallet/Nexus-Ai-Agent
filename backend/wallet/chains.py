@@ -20,6 +20,24 @@ SUPPORTED_CHAINS: dict[str, ChainInfo] = {
     "bsc": ChainInfo("bsc", "BNB Smart Chain", "0x38", 56),
 }
 
+# Common alternate phrasings for the 6 hardcoded chains above. The intent
+# classifier is told to normalize send_chain to one of the canonical keys
+# (e.g. "optimism"), but LLMs don't always follow that constraint exactly
+# -- a message saying "OP Mainnet" can come back as literal "op mainnet",
+# which chain_by_key() would otherwise fail to recognize, sending it down
+# the dynamic-registry path with zero RPC candidates. Matched case-
+# insensitively in chain_by_key() below as a fallback, never as the
+# primary lookup.
+_CHAIN_ALIASES: dict[str, str] = {
+    "op mainnet": "optimism", "op": "optimism", "optimism mainnet": "optimism",
+    "eth mainnet": "ethereum", "eth": "ethereum", "ethereum mainnet": "ethereum",
+    "mainnet": "ethereum",
+    "matic": "polygon", "polygon mainnet": "polygon", "polygon pos": "polygon",
+    "arb": "arbitrum", "arbitrum one": "arbitrum", "arbitrum mainnet": "arbitrum",
+    "base mainnet": "base",
+    "bnb": "bsc", "bnb chain": "bsc", "binance smart chain": "bsc", "bsc mainnet": "bsc",
+}
+
 _BY_CHAIN_ID_INT = {c.chain_id_int: c for c in SUPPORTED_CHAINS.values()}
 _BY_CHAIN_ID_HEX = {c.chain_id_hex.lower(): c for c in SUPPORTED_CHAINS.values()}
 
@@ -52,7 +70,13 @@ def chain_from_hex(chain_id_hex: str | None) -> ChainInfo | None:
 
 def chain_by_key(key: str) -> ChainInfo | None:
     key_lc = key.lower()
-    return SUPPORTED_CHAINS.get(key_lc) or _DYNAMIC_CHAINS.get(key_lc)
+    direct = SUPPORTED_CHAINS.get(key_lc) or _DYNAMIC_CHAINS.get(key_lc)
+    if direct:
+        return direct
+    aliased = _CHAIN_ALIASES.get(key_lc)
+    if aliased:
+        return SUPPORTED_CHAINS.get(aliased)
+    return None
 
 
 def chain_by_id(chain_id_int: int) -> ChainInfo | None:
