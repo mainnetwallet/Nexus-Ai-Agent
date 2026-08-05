@@ -159,6 +159,13 @@ async def rpc_post_with_fallback(rpc_candidates: list[str], payload: dict, timeo
     POST a JSON-RPC payload, trying each candidate URL in order until one
     responds successfully. Raises the last error if all fail.
 
+    Each candidate gets one immediate retry before moving on -- endpoints
+    (Alchemy in particular) occasionally 400/5xx a single request that
+    succeeds a moment later on an identical retry (observed: same exact
+    call succeeding when re-sent manually seconds after the app saw a
+    400 from it), so this catches that transient case before falling
+    back to a different, possibly-lower-quality node.
+
     Exception: if a candidate returns a deterministic, on-chain-state error
     (e.g. "insufficient funds", "nonce too low") rather than an
     endpoint-level problem (rate limit, auth, network), we stop immediately
@@ -170,23 +177,31 @@ async def rpc_post_with_fallback(rpc_candidates: list[str], payload: dict, timeo
     last_error: Optional[Exception] = None
     async with httpx.AsyncClient(timeout=timeout) as client:
         for rpc_url in rpc_candidates:
-            try:
-                resp = await client.post(rpc_url, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                if "error" in data:
-                    raise RuntimeError(f"RPC error from {rpc_url}: {data['error']}")
-                return data
-            except Exception as exc:
-                if _is_deterministic_chain_error(exc):
-                    logger.warning(
-                        "chain_resolver: RPC candidate %s returned a deterministic chain error (%s), "
-                        "not trying further fallbacks", rpc_url, exc,
-                    )
-                    raise
-                logger.warning("chain_resolver: RPC candidate %s failed (%s), trying next", rpc_url, exc)
-                last_error = exc
-                continue
+            for attempt in (1, 2):
+                try:
+                    resp = await client.post(rpc_url, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if "error" in data:
+                        raise RuntimeError(f"RPC error from {rpc_url}: {data['error']}")
+                    return data
+                except Exception as exc:
+                    if _is_deterministic_chain_error(exc):
+                        logger.warning(
+                            "chain_resolver: RPC candidate %s returned a deterministic chain error (%s), "
+                            "not trying further fallbacks", rpc_url, exc,
+                        )
+                        raise
+                    last_error = exc
+                    if attempt == 1:
+                        logger.warning(
+                            "chain_resolver: RPC candidate %s failed (%s), retrying once before "
+                            "moving on", rpc_url, exc,
+                        )
+                    else:
+                        logger.warning(
+                            "chain_resolver: RPC candidate %s failed again (%s), trying next", rpc_url, exc,
+                        )
     raise last_error or RuntimeError("No RPC candidates available")
 
 
