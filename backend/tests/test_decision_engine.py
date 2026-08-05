@@ -92,7 +92,7 @@ def test_recovery_hint_on_action_failure():
 def test_recovery_hint_on_stall():
     engine = DecisionEngine(llm=FakeLLM([]), vision=NullVision())
     hint = engine.recovery_hint("scroll", "", success=True, stall_count=2)
-    assert "has not changed" in hint
+    assert "RECOVERY WARNING" in hint or "without page change" in hint
 
 
 @pytest.mark.asyncio

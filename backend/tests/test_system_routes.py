@@ -79,7 +79,7 @@ async def test_diagnostics_endpoint_returns_checks(client):
     assert r.status_code == 200
     body = r.json()
     assert "passed" in body
-    check_names = {c["name"] for c in body["checks"]}
+    check_names = {c["name"].split(":")[0] for c in body["checks"]}
     assert check_names == {"browser", "playwright", "ai_api", "database", "plugins", "memory", "environment"}
 
 

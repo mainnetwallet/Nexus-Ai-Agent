@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shlex
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -113,16 +114,28 @@ class TerminalMCPConnector(MCPConnector):
                 f"command '{executable}' is not in the allow-list ({sorted(self._allowed_commands)})"
             )
 
+        import shutil
+        if not shutil.which(argv[0]) and not shutil.which(executable) and executable.lower() not in ("echo", "dir", "type", "cls", "copy"):
+            raise MCPToolError(f"executable not found: {executable}")
+
         effective_timeout = float(timeout) if timeout else self._timeout
         logger.info("Terminal MCP running: %s (cwd=%s, timeout=%.0fs)", argv, self._cwd, effective_timeout)
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(self._cwd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            if sys.platform == "win32" and executable.lower() in ("echo", "dir", "type", "cls", "copy"):
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    cwd=str(self._cwd),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    cwd=str(self._cwd),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
         except FileNotFoundError as exc:
             raise MCPToolError(f"executable not found: {executable}") from exc
 
