@@ -291,7 +291,7 @@ class Settings(BaseSettings):
 
     # --- Live browser session (real-time screenshot streaming) ---
     live_session_enabled: bool = Field(default=True, description="Enable the live browser session stream (screenshot polling + WebSocket broadcast)")
-    live_session_interval_ms: int = Field(default=1000, description="How often the live session captures a screenshot of the active task's page")
+    live_session_interval_ms: int = Field(default=300, description="How often the live session captures a screenshot of the active task's page")
     live_session_jpeg_quality: int = Field(default=60, description="JPEG quality (1-100) used for live session frames -- lower is faster/smaller")
 
     # --- Plugin framework ---

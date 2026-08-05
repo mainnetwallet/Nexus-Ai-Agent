@@ -13,8 +13,44 @@ export function Browser() {
 
   useEffect(() => {
     let cancelled = false
+    let ws: WebSocket | null = null
 
-    async function poll() {
+    function connectWs() {
+      try {
+        const url = api.wsUrl("/api/browser/ws/live")
+        ws = new WebSocket(url)
+
+        ws.onmessage = (event) => {
+          if (cancelled) return
+          try {
+            const data = JSON.parse(event.data)
+            if (data.image_base64) {
+              setImgUrl(`data:${data.mime_type || "image/jpeg"};base64,${data.image_base64}`)
+              setStaleAt(data.captured_at ? data.captured_at * 1000 : Date.now())
+            }
+          } catch {
+            // Ignore non-json or malformed frames
+          }
+        }
+
+        ws.onerror = () => {
+          // Fallback HTTP poll if WS encounters error
+        }
+
+        ws.onclose = () => {
+          if (!cancelled) {
+            setTimeout(connectWs, 3000)
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    connectWs()
+
+    // Secondary HTTP fallback poll just in case WS is unavailable
+    async function fallbackPoll() {
       try {
         const blob = await api.browser.screenshotBlob()
         if (cancelled) return
@@ -26,15 +62,20 @@ export function Browser() {
           setStaleAt(Date.now())
         }
       } catch {
-        // Live session may not be initialized yet -- keep polling quietly.
+        // Quiet fallback
       }
     }
 
-    poll()
-    const id = setInterval(poll, 1500)
+    const fallbackId = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        fallbackPoll()
+      }
+    }, 2000)
+
     return () => {
       cancelled = true
-      clearInterval(id)
+      clearInterval(fallbackId)
+      if (ws) ws.close()
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
     }
   }, [])
