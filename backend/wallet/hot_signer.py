@@ -575,13 +575,16 @@ class HotSigner:
             rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
         )
         gas_price = _bump(int(await self._rpc_call(rpc_candidates, "eth_gasPrice", []), 16))
+        gas_limit = _bump(await self._estimate_native_gas_with_fallback(
+            rpc_candidates, from_address, to_address, amount_wei
+        ))
 
         tx = {
             "chainId": chain.chain_id_int,
             "nonce": int(nonce, 16),
             "to": to_address,
             "value": amount_wei,
-            "gas": _bump(21000),  # plain native transfer, no calldata, +5% margin
+            "gas": gas_limit,
             "gasPrice": gas_price,
         }
 
@@ -771,6 +774,22 @@ class HotSigner:
                 f"Could not read decimals() from token {token_address!r} -- "
                 "pass decimals explicitly if this isn't a standard ERC20"
             ) from exc
+
+    async def _estimate_native_gas_with_fallback(
+        self, rpc_candidates: list[str], from_address: str, to_address: str, value_wei: int,
+    ) -> int:
+        """eth_estimateGas for a plain native-currency transfer (no calldata).
+        Floors at 21000 (the protocol minimum for a value transfer) and falls
+        back to it if the node can't/won't estimate."""
+        try:
+            estimate_hex = await self._rpc_call(
+                rpc_candidates, "eth_estimateGas",
+                [{"from": from_address, "to": to_address, "value": hex(value_wei)}],
+            )
+            return max(int(estimate_hex, 16), 21000)
+        except Exception:
+            logger.warning("eth_estimateGas failed for native transfer, using protocol floor of 21000")
+            return 21000
 
     async def _estimate_gas_with_fallback(
         self, rpc_candidates: list[str], from_address: str, to_address: str, calldata: str,

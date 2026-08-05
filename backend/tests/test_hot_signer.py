@@ -86,6 +86,8 @@ async def test_send_native_success(monkeypatch):
             return "0x5"
         if method == "eth_gasPrice":
             return "0x3b9aca00"  # 1 gwei
+        if method == "eth_estimateGas":
+            return "0x5208"  # 21000
         if method == "eth_sendRawTransaction":
             return "0xdeadbeef"
         raise AssertionError(f"unexpected method {method}")
@@ -110,7 +112,7 @@ async def test_send_native_success(monkeypatch):
     assert result.to_address == to_addr
     assert result.amount_native == 0.001
     assert result.amount_wei == int(0.001 * 1e18)
-    assert calls == ["eth_getTransactionCount", "eth_gasPrice", "eth_sendRawTransaction"]
+    assert calls == ["eth_getTransactionCount", "eth_gasPrice", "eth_estimateGas", "eth_sendRawTransaction"]
     assert recorded["event_type"] == "hot_signer_native_send"
     assert recorded["metadata"]["tx_hash"] == "0xdeadbeef"
 
