@@ -543,11 +543,11 @@ class ChatEngine:
         async with get_session() as db:
             if session.last_task_id:
                 task = await db.get(Task, session.last_task_id)
-                if task and task.status == TaskStatus.PAUSED:
+                if task and task.status in (TaskStatus.PAUSED, TaskStatus.FAILED):
                     return task
             stmt = (
                 select(Task)
-                .where(Task.status == TaskStatus.PAUSED)
+                .where(Task.status.in_([TaskStatus.PAUSED, TaskStatus.FAILED]))
                 .order_by(Task.created_at.desc())
                 .limit(1)
             )
@@ -559,17 +559,21 @@ class ChatEngine:
             db_task = await db.get(Task, task.id)
             if db_task:
                 existing_notes = db_task.notes or ""
-                db_task.notes = f"{existing_notes}\n[USER INPUT]: {text}".strip()
+                db_task.notes = f"{existing_notes}\n[USER FIX ADVICE]: {text}".strip()
                 db_task.status = TaskStatus.QUEUED
+                db_task.retry_count = 0
                 await db.flush()
 
         if self.queue:
-            await self.queue.resume_task(task.id)
+            if task.status == TaskStatus.FAILED:
+                await self.queue.retry(task.id)
+            else:
+                await self.queue.resume_task(task.id)
 
         session.last_task_id = task.id
         reply = (
-            f"Received your input: '{text}'. "
-            f"Updated task notes and resuming task on {task.website or 'system'} (task_id={task.id[:8]})."
+            f"Received your fix advice: '{text}'. "
+            f"Updated task instructions and retrying task on {task.website or 'system'} (task_id={task.id[:8]})."
         )
         return reply, {"task_id": task.id, "resumed": True, "input": text}
 

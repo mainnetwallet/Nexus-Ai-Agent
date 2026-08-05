@@ -215,29 +215,38 @@ class BrowserEngine:
         Attempts several strategies to click an element described by a CSS
         selector, role, placeholder, label, or visible text.
         """
-        per_strategy_timeout = 2500  # 2.5s per strategy to avoid 25s hangs
+        per_strategy_timeout = 2500  # 2.5s per strategy to avoid hangs
         text_clean = (selector_or_text or "").strip()
         if not text_clean:
             return False
 
+        # Clean pseudo-selectors like button:has-text("Continue") -> raw_text = "Continue"
+        raw_text = text_clean
+        if ":has-text(" in text_clean:
+            import re
+            m = re.search(r':has-text\(["\']?(.*?)["\']?\)', text_clean)
+            if m:
+                raw_text = m.group(1).rstrip('"\')')
+        elif text_clean.startswith(("button:", "input:", "a:")):
+            raw_text = text_clean.split(":", 1)[1].strip()
+
         def _is_valid_css(sel: str) -> bool:
-            # Simple check: valid CSS shouldn't contain unescaped spaces/quotes unless bracketed
             if any(c in sel for c in ['"', "'", "\n", "\r"]):
                 return "[" in sel and "]" in sel
-            return True
+            return not sel.startswith(("button:", "input:", "a:"))
 
         strategies = []
         if _is_valid_css(text_clean):
             strategies.append(lambda: self.page.locator(text_clean))
         strategies.extend([
-            lambda: self.page.get_by_role("button", name=text_clean, exact=exact),
-            lambda: self.page.get_by_text(text_clean, exact=exact),
-            lambda: self.page.get_by_role("link", name=text_clean, exact=exact),
-            lambda: self.page.get_by_placeholder(text_clean, exact=exact),
-            lambda: self.page.get_by_label(text_clean, exact=exact),
-            lambda: self.page.locator(f"[aria-label*='{text_clean}']"),
-            lambda: self.page.locator(f"input[placeholder*='{text_clean}'], textarea[placeholder*='{text_clean}']"),
-            lambda: self.page.locator(f"button:has-text('{text_clean}')"),
+            lambda: self.page.get_by_role("button", name=raw_text, exact=exact),
+            lambda: self.page.get_by_text(raw_text, exact=exact),
+            lambda: self.page.get_by_role("link", name=raw_text, exact=exact),
+            lambda: self.page.get_by_placeholder(raw_text, exact=exact),
+            lambda: self.page.get_by_label(raw_text, exact=exact),
+            lambda: self.page.locator(f"[aria-label*='{raw_text}']"),
+            lambda: self.page.locator(f"button:has-text('{raw_text}')"),
+            lambda: self.page.locator(f"a:has-text('{raw_text}')"),
         ])
 
         for build_locator in strategies:
