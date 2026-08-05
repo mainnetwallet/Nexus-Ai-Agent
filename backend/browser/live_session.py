@@ -180,7 +180,7 @@ class LiveSessionManager:
             return
 
         try:
-            frame_bytes = await page.screenshot(type="jpeg", quality=self._jpeg_quality)
+            frame_bytes = await page.screenshot(type="jpeg", quality=self._jpeg_quality, full_page=True)
         except Exception as exc:
             # Common during navigation transitions -- not a real failure.
             self._last_error = str(exc)

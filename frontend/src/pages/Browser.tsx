@@ -61,9 +61,9 @@ export function Browser() {
             <Badge variant={active ? "green" : "neutral"}>{active ? "live" : "idle"}</Badge>
           </CardHeader>
           <CardContent>
-            <div className="relative aspect-video overflow-hidden rounded-md border border-[var(--color-border)] bg-black">
+            <div className="relative w-full overflow-hidden rounded-md border border-[var(--color-border)] bg-black" style={{ minHeight: "420px", maxHeight: "75vh" }}>
               {imgUrl ? (
-                <img src={imgUrl} alt="Live agent browser view" className="h-full w-full object-contain" />
+                <img src={imgUrl} alt="Live agent browser view" className="h-full w-full object-contain" style={{ maxHeight: "75vh" }} />
               ) : (
                 <div className="flex h-full w-full items-center justify-center">
                   <p className="text-sm text-[var(--color-text-faint)]">
