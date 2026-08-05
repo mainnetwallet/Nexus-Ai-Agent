@@ -184,7 +184,16 @@ class AgentLoop:
             url_after = self.engine.page.url
             self.decision_engine.verify(url_before, url_after, action, success)
 
-            if url_after == last_url:
+            # Stall detection: A same-URL result is expected for in-page actions
+            # (scrolling, typing, filling forms, clicking dropdowns/tabs). Only
+            # increment stall_count if the action failed, or if non-scroll actions
+            # repeat on the exact same URL multiple times.
+            if not success:
+                stall_count += 1
+            elif action in (StepAction.SCROLL.value, StepAction.WAIT.value):
+                # Successful scroll/wait is intentional in-page movement; avoid false stalls
+                stall_count = max(0, stall_count - 1)
+            elif url_after == last_url:
                 stall_count += 1
             else:
                 stall_count = 0
@@ -194,7 +203,7 @@ class AgentLoop:
             # the planner sees what went wrong, without changing control flow.
             recovery_context = self.decision_engine.recovery_hint(action, target, success, stall_count)
 
-            if stall_count >= 4:
+            if stall_count >= 6:
                 outcome.status = "failed"
                 outcome.summary = "Agent stalled: page state stopped changing after repeated actions."
                 break

@@ -44,10 +44,10 @@ You are given the CURRENT state of a webpage (visible text + a list of interacti
 and a user's GOAL. You must decide the single next best action to move toward the goal.
 
 Rules:
-- You have NEVER seen this website before and must reason purely from what is visible now.
+- If a target element or next step is not visible in the current viewport, use action "scroll" (value "down") to explore further down the page before marking as blocked.
 - Prefer the most specific, unambiguous element description available (visible button/link text).
 - If the goal appears already complete, return action "finish".
-- If you are blocked (e.g. captcha, login wall, missing wallet connection you cannot perform),
+- If you are blocked (e.g. unsolved captcha, mandatory login wall, missing wallet connection),
   return action "blocked" and explain why in "reasoning".
 - If a wallet-signing / transaction-approval popup seems to be open, return action "wallet_popup".
 - If the goal requires something the page itself cannot do -- reading/writing a local file,

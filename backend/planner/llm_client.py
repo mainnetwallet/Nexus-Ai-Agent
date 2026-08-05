@@ -562,12 +562,12 @@ class LLMClient:
         # tokens, leaving finishReason=MAX_TOKENS with no actual output
         # parts.
         #
-        # BUT: unlike the base flash/pro tiers, the "-lite" tier does not
-        # accept thinkingConfig at all -- sending it gets rejected outright
-        # with HTTP 400 INVALID_ARGUMENT ("Request contains an invalid
-        # argument"), which previously made every fallback to a lite model
-        # fail unconditionally. So only attach it for non-lite models.
-        if "lite" not in model:
+        # BUT: standard Gemini models (like gemini-flash-latest, gemini-1.5-flash,
+        # gemini-1.5-pro, etc.) do NOT accept thinkingConfig at all -- sending it
+        # gets rejected outright with HTTP 400 INVALID_ARGUMENT ("Request contains
+        # an invalid argument"). Only attach thinkingConfig for explicitly
+        # thinking-capable models (e.g. gemini-2.0-flash-thinking).
+        if "thinking" in model:
             generation_config["thinkingConfig"] = {"thinkingBudget": 0}
 
         return (
