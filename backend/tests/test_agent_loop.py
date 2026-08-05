@@ -41,9 +41,6 @@ class FakeEngine:
     async def detect_popup_or_dialog(self, timeout_ms=300):
         return None
 
-    async def detect_and_solve_cloudflare(self):
-        return False
-
     async def smart_click(self, target):
         self._clicked.append(target)
         return True
