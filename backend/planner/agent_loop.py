@@ -113,6 +113,12 @@ class AgentLoop:
 
         await self.engine.navigate(website)
 
+        # Auto-solve Cloudflare Turnstile / "Verify you are human" after
+        # initial navigation -- many airdrop/campaign sites gate access
+        # behind Cloudflare's bot-check interstitial page.
+        if hasattr(self.engine, "detect_and_solve_cloudflare"):
+            await self.engine.detect_and_solve_cloudflare()
+
         similar = await self.memory.recall_similar_workflows(website=website, goal=goal, top_k=3)
         prior_context = self._format_prior_context(similar)
 
@@ -130,6 +136,13 @@ class AgentLoop:
                 outcome.summary = "Task was cancelled."
                 break
 
+            # Auto-solve Cloudflare Turnstile if we landed on a verification
+            # page after a navigation/redirect mid-task.
+            if hasattr(self.engine, "detect_and_solve_cloudflare"):
+                cf_solved = await self.engine.detect_and_solve_cloudflare()
+                if cf_solved:
+                    logger.info("Cloudflare Turnstile solved mid-task, re-snapshotting page")
+
             url_before = self.engine.page.url
             snapshot = await self.engine.snapshot(name_hint=f"step{step_index}")
             snapshot, _perception = await self.decision_engine.perceive(snapshot, goal)
@@ -137,6 +150,7 @@ class AgentLoop:
             popup_id = await self.engine.detect_popup_or_dialog(timeout_ms=300)
             if popup_id:
                 logger.info("Popup detected mid-task (likely wallet or auth) tab=%s", popup_id)
+
 
             decision = await self.decision_engine.decide(
                 goal, wallet_label, notes, snapshot, prior_context, recovery_context
