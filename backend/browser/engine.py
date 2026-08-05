@@ -208,119 +208,6 @@ class BrowserEngine:
         await asyncio.sleep(ms / 1000)
 
     # ------------------------------------------------------------------ #
-    # Cloudflare Turnstile / "Verify you are human" auto-solver
-    # ------------------------------------------------------------------ #
-    async def solve_cloudflare_turnstile(self) -> bool:
-        """
-        Detects and clicks the Cloudflare Turnstile "Verify you are human"
-        checkbox. The challenge lives inside an iframe from
-        challenges.cloudflare.com, so normal smart_click cannot reach it.
-        Returns True if a Turnstile was found and clicked, False otherwise.
-        """
-        try:
-            # Strategy 1: Find the Turnstile iframe by src URL
-            cf_iframe = self.page.frame_locator(
-                'iframe[src*="challenges.cloudflare.com"]'
-            )
-            checkbox = cf_iframe.locator('input[type="checkbox"], .ctp-checkbox-label, label, #cf-turnstile-response').first
-            try:
-                await checkbox.wait_for(state="visible", timeout=3000)
-                await checkbox.click(timeout=3000)
-                logger.info("Cloudflare Turnstile: clicked checkbox inside iframe (strategy 1)")
-                await self._settle(ms=3000)
-                return True
-            except Exception:
-                pass
-
-            # Strategy 2: Click the body/div inside the iframe (some Turnstile
-            # variants use a div click target, not a checkbox input)
-            body = cf_iframe.locator("body").first
-            try:
-                await body.wait_for(state="visible", timeout=2000)
-                await body.click(timeout=2000)
-                logger.info("Cloudflare Turnstile: clicked iframe body (strategy 2)")
-                await self._settle(ms=3000)
-                return True
-            except Exception:
-                pass
-
-            # Strategy 3: Find any iframe with "Verify" or "human" text nearby
-            # and click it directly (some sites wrap Turnstile differently)
-            for frame in self.page.frames:
-                if "challenges.cloudflare.com" in (frame.url or ""):
-                    try:
-                        cb = frame.locator('input[type="checkbox"], .ctp-checkbox-label, label').first
-                        await cb.click(timeout=3000)
-                        logger.info("Cloudflare Turnstile: clicked checkbox via frame object (strategy 3)")
-                        await self._settle(ms=3000)
-                        return True
-                    except Exception:
-                        pass
-
-            # Strategy 4: Click the Turnstile widget container on the main page
-            # (the outer div that wraps the iframe -- clicking it sometimes
-            # triggers the challenge in non-iframe-isolated mode)
-            turnstile_div = self.page.locator('[class*="turnstile"], [id*="turnstile"], [class*="cf-"], .cf-turnstile').first
-            try:
-                await turnstile_div.wait_for(state="visible", timeout=2000)
-                await turnstile_div.click(timeout=2000)
-                logger.info("Cloudflare Turnstile: clicked outer container div (strategy 4)")
-                await self._settle(ms=3000)
-                return True
-            except Exception:
-                pass
-
-            # Strategy 5: Look for "Verify you are human" text and click it
-            verify_label = self.page.get_by_text("Verify you are human", exact=False).first
-            try:
-                await verify_label.wait_for(state="visible", timeout=2000)
-                await verify_label.click(timeout=2000)
-                logger.info("Cloudflare Turnstile: clicked 'Verify you are human' text (strategy 5)")
-                await self._settle(ms=3000)
-                return True
-            except Exception:
-                pass
-
-        except Exception as exc:
-            logger.debug("solve_cloudflare_turnstile: no Turnstile found (%s)", exc)
-
-        return False
-
-    async def detect_and_solve_cloudflare(self) -> bool:
-        """
-        Checks if the current page is a Cloudflare verification interstitial
-        and attempts to solve it. Returns True if a challenge was detected
-        and handled (caller should re-snapshot the page after).
-        """
-        try:
-            visible_text = await self.extract_visible_text(max_chars=2000)
-            cf_indicators = [
-                "Verify you are human",
-                "Performing security verification",
-                "Just a moment",
-                "Checking your browser",
-                "Checking if the site connection is secure",
-                "Enable JavaScript and cookies to continue",
-            ]
-            is_cf_page = any(ind.lower() in visible_text.lower() for ind in cf_indicators)
-            if not is_cf_page:
-                return False
-
-            logger.info("Cloudflare verification page detected, attempting auto-solve")
-            solved = await self.solve_cloudflare_turnstile()
-            if solved:
-                # Wait for the page to redirect after solving
-                try:
-                    await self.page.wait_for_load_state("domcontentloaded", timeout=10_000)
-                except Exception:
-                    pass
-                await self._settle(ms=2000)
-            return solved
-        except Exception as exc:
-            logger.debug("detect_and_solve_cloudflare failed: %s", exc)
-            return False
-
-    # ------------------------------------------------------------------ #
     # Smart primitives
     # ------------------------------------------------------------------ #
     async def smart_click(self, selector_or_text: str, exact: bool = False, timeout_ms: int | None = None) -> bool:
@@ -373,6 +260,33 @@ class BrowserEngine:
             except Exception as exc:
                 logger.debug("smart_click strategy failed for %r (%s)", selector_or_text, exc)
                 continue
+
+        # Frame traversal fallback for Cloudflare Turnstile / embedded iframes
+        for frame in self.page.frames:
+            if frame == self.page.main_frame:
+                continue
+            for build_locator in [
+                lambda f=frame: f.locator('input[type="checkbox"]'),
+                lambda f=frame: f.locator('.ctp-checkbox-label, label.cb-lb, #challenge-stage, .mark'),
+                lambda f=frame: f.get_by_text(raw_text, exact=exact),
+                lambda f=frame: f.get_by_role("button", name=raw_text, exact=exact),
+                lambda f=frame: f.locator(f"[aria-label*='{raw_text}']"),
+            ]:
+                try:
+                    locator = build_locator().first
+                    if await locator.is_visible(timeout=1000):
+                        logger.info("smart_click succeeded inside iframe %s for %r", frame.url, selector_or_text)
+                        await locator.scroll_into_view_if_needed()
+                        await locator.click(force=True, timeout=per_strategy_timeout)
+                        await self._settle(ms=1500)
+                        return True
+                except Exception:
+                    continue
+
+        # Direct Cloudflare Turnstile / security challenge auto-solver
+        if await self.auto_handle_security_verification():
+            return True
+
         logger.warning("smart_click failed for %r", selector_or_text)
         return False
 
@@ -513,7 +427,63 @@ class BrowserEngine:
         await self.page.screenshot(path=str(path), full_page=False)
         return str(path)
 
+    async def auto_handle_security_verification(self) -> bool:
+        """
+        Detects and automatically solves Cloudflare Turnstile / "Verify you are human"
+        security verification challenges across main frame and child iframes.
+        """
+        try:
+            text = (await self.extract_visible_text(max_chars=2000)).lower()
+            url = self.page.url.lower()
+            has_challenge = any(k in text or k in url for k in (
+                "verify you are human",
+                "performing security verification",
+                "challenges.cloudflare.com",
+                "just a moment",
+                "turnstile",
+                "security verification"
+            ))
+
+            if not has_challenge and len(self.page.frames) <= 1:
+                return False
+
+            for frame in self.page.frames:
+                try:
+                    locators = [
+                        frame.locator('input[type="checkbox"]'),
+                        frame.locator('.ctp-checkbox-label'),
+                        frame.locator('label.cb-lb'),
+                        frame.locator('#challenge-stage'),
+                        frame.locator('.mark'),
+                        frame.get_by_text("Verify you are human"),
+                    ]
+                    for loc in locators:
+                        first = loc.first
+                        if await first.is_visible(timeout=500):
+                            logger.info("Cloudflare / Security verification challenge detected in frame %s. Clicking checkbox...", frame.url)
+                            await first.scroll_into_view_if_needed()
+                            await first.click(force=True, timeout=2000)
+                            await self._settle(ms=2500)
+                            return True
+                except Exception:
+                    continue
+
+            if has_challenge:
+                iframe_loc = self.page.locator('iframe[src*="challenges.cloudflare.com"], iframe[title*="Turnstile"], iframe[title*="Cloudflare"]').first
+                if await iframe_loc.is_visible(timeout=1000):
+                    logger.info("Clicking Turnstile iframe element via coordinates...")
+                    box = await iframe_loc.bounding_box()
+                    if box:
+                        await self.page.mouse.click(box["x"] + 30, box["y"] + box["height"] / 2)
+                        await self._settle(ms=2500)
+                        return True
+        except Exception as exc:
+            logger.debug("auto_handle_security_verification error: %s", exc)
+        return False
+
     async def snapshot(self, name_hint: str = "snapshot") -> PageSnapshot:
+        # Automatically detect and click Cloudflare Turnstile / security verification if present
+        await self.auto_handle_security_verification()
         return PageSnapshot(
             url=self.page.url,
             title=await self.page.title(),
