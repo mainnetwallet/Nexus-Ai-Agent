@@ -213,22 +213,39 @@ class BrowserEngine:
     async def smart_click(self, selector_or_text: str, exact: bool = False, timeout_ms: int | None = None) -> bool:
         """
         Attempts several strategies to click an element described by a CSS
-        selector, role, or visible text -- in that order of preference.
+        selector, role, placeholder, label, or visible text.
         """
-        timeout_ms = timeout_ms or settings.browser_default_timeout_ms
-        strategies = [
-            lambda: self.page.locator(selector_or_text),
-            lambda: self.page.get_by_text(selector_or_text, exact=exact),
-            lambda: self.page.get_by_role("button", name=selector_or_text, exact=exact),
-            lambda: self.page.get_by_role("link", name=selector_or_text, exact=exact),
-            lambda: self.page.get_by_label(selector_or_text, exact=exact),
-        ]
+        per_strategy_timeout = 2500  # 2.5s per strategy to avoid 25s hangs
+        text_clean = (selector_or_text or "").strip()
+        if not text_clean:
+            return False
+
+        def _is_valid_css(sel: str) -> bool:
+            # Simple check: valid CSS shouldn't contain unescaped spaces/quotes unless bracketed
+            if any(c in sel for c in ['"', "'", "\n", "\r"]):
+                return "[" in sel and "]" in sel
+            return True
+
+        strategies = []
+        if _is_valid_css(text_clean):
+            strategies.append(lambda: self.page.locator(text_clean))
+        strategies.extend([
+            lambda: self.page.get_by_role("button", name=text_clean, exact=exact),
+            lambda: self.page.get_by_text(text_clean, exact=exact),
+            lambda: self.page.get_by_role("link", name=text_clean, exact=exact),
+            lambda: self.page.get_by_placeholder(text_clean, exact=exact),
+            lambda: self.page.get_by_label(text_clean, exact=exact),
+            lambda: self.page.locator(f"[aria-label*='{text_clean}']"),
+            lambda: self.page.locator(f"input[placeholder*='{text_clean}'], textarea[placeholder*='{text_clean}']"),
+            lambda: self.page.locator(f"button:has-text('{text_clean}')"),
+        ])
+
         for build_locator in strategies:
             try:
                 locator = build_locator().first
-                await locator.wait_for(state="visible", timeout=timeout_ms // len(strategies))
+                await locator.wait_for(state="visible", timeout=per_strategy_timeout)
                 await locator.scroll_into_view_if_needed()
-                await locator.click(timeout=timeout_ms // len(strategies))
+                await locator.click(timeout=per_strategy_timeout)
                 await self._settle()
                 return True
             except Exception as exc:
@@ -238,18 +255,37 @@ class BrowserEngine:
         return False
 
     async def smart_type(self, selector_or_label: str, text: str, clear_first: bool = True) -> bool:
-        strategies = [
-            lambda: self.page.locator(selector_or_label),
-            lambda: self.page.get_by_label(selector_or_label),
-            lambda: self.page.get_by_placeholder(selector_or_label),
-        ]
+        text_clean = (selector_or_label or "").strip()
+        per_strategy_timeout = 2500
+
+        def _is_valid_css(sel: str) -> bool:
+            if any(c in sel for c in ['"', "'", "\n", "\r"]):
+                return "[" in sel and "]" in sel
+            return True
+
+        strategies = []
+        if text_clean and _is_valid_css(text_clean):
+            strategies.append(lambda: self.page.locator(text_clean))
+        if text_clean:
+            strategies.extend([
+                lambda: self.page.get_by_placeholder(text_clean),
+                lambda: self.page.get_by_label(text_clean),
+                lambda: self.page.get_by_role("textbox", name=text_clean),
+                lambda: self.page.locator(f"input[placeholder*='{text_clean}'], textarea[placeholder*='{text_clean}']"),
+                lambda: self.page.locator(f"input[name*='{text_clean}'], input[id*='{text_clean}']"),
+            ])
+        # Ultimate fallback: if only 1 visible input element exists, type into it
+        strategies.append(lambda: self.page.locator("input:visible, textarea:visible").first)
+
         for build_locator in strategies:
             try:
                 locator = build_locator().first
-                await locator.wait_for(state="visible", timeout=5_000)
+                await locator.wait_for(state="visible", timeout=per_strategy_timeout)
                 if clear_first:
                     await locator.fill("")
                 await locator.fill(text)
+                await locator.press("Enter")
+                await self._settle(ms=300)
                 return True
             except Exception as exc:
                 logger.debug("smart_type strategy failed for %r (%s)", selector_or_label, exc)
@@ -282,8 +318,7 @@ class BrowserEngine:
     async def extract_interactive_elements(self, limit: int = 150) -> list[dict[str, Any]]:
         """
         Extracts a compact list of clickable/typeable elements with their
-        visible text, role, and a stable selector -- fed to the planner LLM
-        so it can decide what to do without ever seeing raw hardcoded HTML.
+        visible text, role, and a stable CSS selector for the planner LLM.
         """
         js = """
         () => {
@@ -299,10 +334,20 @@ class BrowserEngine:
                 if (!isVisible(el)) continue;
                 const text = (el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '').trim().slice(0, 120);
                 if (!text && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') continue;
+                
+                let selector = '';
+                if (el.id) { selector = '#' + el.id; }
+                else if (el.getAttribute('name')) { selector = '[name="' + el.getAttribute('name') + '"]'; }
+                else if (el.placeholder) { selector = '[placeholder="' + el.placeholder + '"]'; }
+                else if (el.getAttribute('aria-label')) { selector = '[aria-label="' + el.getAttribute('aria-label') + '"]'; }
+                else if (text) { selector = el.tagName.toLowerCase() + ':has-text("' + text.slice(0, 30).replace(/"/g, '') + '")'; }
+                else { selector = el.tagName.toLowerCase(); }
+
                 out.push({
                     tag: el.tagName.toLowerCase(),
                     role: el.getAttribute('role') || '',
                     text: text,
+                    selector: selector,
                     type: el.getAttribute('type') || '',
                     name: el.getAttribute('name') || '',
                     id: el.id || '',
