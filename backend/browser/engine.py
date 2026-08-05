@@ -267,24 +267,34 @@ class BrowserEngine:
         text_clean = (selector_or_label or "").strip()
         per_strategy_timeout = 2500
 
+        # Clean pseudo-selectors like input:has-text("1234") -> raw_text = "1234"
+        raw_text = text_clean
+        if ":has-text(" in text_clean:
+            import re
+            m = re.search(r':has-text\(["\']?(.*?)["\']?\)', text_clean)
+            if m:
+                raw_text = m.group(1).rstrip('"\')')
+        elif text_clean.startswith(("button:", "input:", "a:", "textarea:")):
+            raw_text = text_clean.split(":", 1)[1].strip()
+
         def _is_valid_css(sel: str) -> bool:
             if any(c in sel for c in ['"', "'", "\n", "\r"]):
                 return "[" in sel and "]" in sel
-            return True
+            return not sel.startswith(("button:", "input:", "a:", "textarea:"))
 
         strategies = []
         if text_clean and _is_valid_css(text_clean):
             # Ensure we prefer visible elements over hidden DOM inputs (e.g. <input type="hidden">)
             strategies.append(lambda: self.page.locator(f"{text_clean}:visible"))
             strategies.append(lambda: self.page.locator(text_clean))
-        if text_clean:
+        if raw_text:
             strategies.extend([
-                lambda: self.page.get_by_placeholder(text_clean),
-                lambda: self.page.get_by_label(text_clean),
-                lambda: self.page.get_by_role("textbox", name=text_clean),
-                lambda: self.page.locator(f"input[placeholder*='{text_clean}']:visible, textarea[placeholder*='{text_clean}']:visible"),
-                lambda: self.page.locator(f"input[name*='{text_clean}']:visible, input[id*='{text_clean}']:visible"),
-                lambda: self.page.locator(f"[aria-label*='{text_clean}']:visible"),
+                lambda: self.page.get_by_placeholder(raw_text),
+                lambda: self.page.get_by_label(raw_text),
+                lambda: self.page.get_by_role("textbox", name=raw_text),
+                lambda: self.page.locator(f"input[placeholder*='{raw_text}']:visible, textarea[placeholder*='{raw_text}']:visible"),
+                lambda: self.page.locator(f"input[name*='{raw_text}']:visible, input[id*='{raw_text}']:visible"),
+                lambda: self.page.locator(f"[aria-label*='{raw_text}']:visible"),
             ])
         # Fallback for Google Forms / SPAs using contenteditable or custom textboxes
         strategies.extend([
