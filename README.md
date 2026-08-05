@@ -15,6 +15,7 @@ engine" requirement: it never hardcodes selectors or logic for any particular si
 ```bash
 cd Nexus-Ai-Agent
 git pull origin main
+.\scripts\dev.ps1
 ```
 Pull-এর পর server restart করুন। প্রয়োজনে `pip install -r requirements.txt` / `npm install`।
 
