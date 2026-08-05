@@ -357,8 +357,10 @@ class ModelManager:
             if p in seen:
                 continue
             seen.add(p)
-            if p == primary or self.is_available(p):
+            if self.is_available(p):
                 chain.append(p)
+        if not chain:
+            chain.append(primary)
         return chain
 
     # ------------------------------------------------------------------ #
