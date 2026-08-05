@@ -466,16 +466,38 @@ class BrowserEngine:
             )
             has_challenge = any(k in text or k in url for k in challenge_keywords)
 
+            # Strategy 1: Direct mouse coordinate click on Cloudflare Turnstile / Challenge iframes
+            turnstile_iframes = self.page.locator(
+                'iframe[src*="cloudflare"], iframe[src*="turnstile"], iframe[title*="Turnstile"], iframe[title*="Cloudflare"]'
+            )
+            try:
+                iframe_count = await turnstile_iframes.count()
+                for i in range(iframe_count):
+                    iframe_el = turnstile_iframes.nth(i)
+                    if await iframe_el.is_visible(timeout=500):
+                        box = await iframe_el.bounding_box()
+                        if box and box["width"] > 0 and box["height"] > 0:
+                            click_x = box["x"] + 35
+                            click_y = box["y"] + min(35.0, box["height"] / 2.0)
+                            logger.info("Cloudflare Turnstile iframe detected. Performing mouse click at (%f, %f)...", click_x, click_y)
+                            await self.page.mouse.move(click_x, click_y)
+                            await asyncio.sleep(0.15)
+                            await self.page.mouse.click(click_x, click_y)
+                            await self._settle(ms=3000)
+                            return True
+            except Exception as cf_exc:
+                logger.debug("Turnstile direct iframe click error: %s", cf_exc)
+
             if not has_challenge and len(self.page.frames) <= 1:
                 return False
 
-            # Strategy 1: Iterate through main page and all child iframes for verification elements
+            # Strategy 2: Iterate through main page and all child iframes for verification elements
             for frame in self.page.frames:
                 try:
                     locators = [
+                        frame.locator('.ctp-checkbox-label, label.cb-lb, #challenge-stage, .mark, label, span.mark'),
                         frame.locator('input[type="checkbox"]'),
                         frame.locator('#recaptcha-anchor, .recaptcha-checkbox-border'),
-                        frame.locator('.ctp-checkbox-label, label.cb-lb, #challenge-stage, .mark'),
                         frame.locator('.geetest_radar_tip, .hcaptcha-checkbox, #checkbox, #verify-button, .geetest_btn'),
                         frame.get_by_text("Verify you are human", exact=False),
                         frame.get_by_text("Verify you're human", exact=False),
@@ -487,29 +509,33 @@ class BrowserEngine:
                     ]
                     for loc in locators:
                         first = loc.first
-                        if await first.is_visible(timeout=500):
-                            logger.info("Security verification / human challenge detected in frame %s. Executing click...", frame.url)
-                            await first.scroll_into_view_if_needed()
-
-                            # Press & Hold handling (Datadome / Imperva / PerimeterX)
-                            loc_text = (await first.inner_text() if hasattr(first, 'inner_text') else "").lower()
-                            if "press" in loc_text and "hold" in loc_text:
+                        try:
+                            count = await loc.count()
+                            if count > 0:
                                 box = await first.bounding_box()
-                                if box:
-                                    await self.page.mouse.move(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                                    await self.page.mouse.down()
-                                    await asyncio.sleep(3.5)
-                                    await self.page.mouse.up()
-                                    await self._settle(ms=2500)
-                                    return True
+                                if box and box["width"] > 0:
+                                    click_x = box["x"] + box["width"] / 2.0
+                                    click_y = box["y"] + box["height"] / 2.0
+                                    logger.info("Security verification element found in frame %s. Mouse click at (%f, %f)...", frame.url, click_x, click_y)
+                                    await self.page.mouse.move(click_x, click_y)
+                                    await asyncio.sleep(0.1)
 
-                            await first.click(force=True, timeout=2000)
-                            await self._settle(ms=2500)
-                            return True
+                                    loc_text = (await first.inner_text() if hasattr(first, 'inner_text') else "").lower()
+                                    if "press" in loc_text and "hold" in loc_text:
+                                        await self.page.mouse.down()
+                                        await asyncio.sleep(3.5)
+                                        await self.page.mouse.up()
+                                    else:
+                                        await self.page.mouse.click(click_x, click_y)
+
+                                    await self._settle(ms=3000)
+                                    return True
+                        except Exception:
+                            continue
                 except Exception:
                     continue
 
-            # Strategy 2: If challenge iframe exists on main page, click center / checkbox of iframe
+            # Strategy 3: Direct iframe bounding box click fallback
             if has_challenge:
                 iframe_loc = self.page.locator(
                     'iframe[src*="cloudflare"], iframe[title*="Turnstile"], iframe[title*="Cloudflare"], '
@@ -521,8 +547,8 @@ class BrowserEngine:
                     logger.info("Clicking security challenge iframe element via coordinates...")
                     box = await iframe_loc.bounding_box()
                     if box:
-                        await self.page.mouse.click(box["x"] + min(30, box["width"]/2), box["y"] + box["height"] / 2)
-                        await self._settle(ms=2500)
+                        await self.page.mouse.click(box["x"] + min(35.0, box["width"]/2.0), box["y"] + box["height"] / 2.0)
+                        await self._settle(ms=3000)
                         return True
         except Exception as exc:
             logger.debug("auto_handle_security_verification error: %s", exc)

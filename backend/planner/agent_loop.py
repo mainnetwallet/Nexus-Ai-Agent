@@ -210,7 +210,11 @@ class AgentLoop:
             # increment stall_count if the action failed, or if the EXACT SAME
             # action and target are repeated on the exact same URL consecutively.
             action_target = (action, target)
-            if not success:
+            is_verification_target = any(k in target.lower() for k in ("verify", "human", "cloudflare", "turnstile", "captcha", "robot"))
+            if is_verification_target:
+                # Security challenges can take multiple attempts/settle waits; avoid false stalls
+                stall_count = 0
+            elif not success:
                 stall_count += 1
             elif action == StepAction.SCROLL.value:
                 # Successful scroll is intentional in-page movement; avoid false stalls
