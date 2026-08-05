@@ -9,13 +9,19 @@ Two things this module does:
    try them in order and move on the first time one errors out.
 
 2. Unknown-chain resolution: if the user names an EVM chain that isn't in
-   SUPPORTED_CHAINS (e.g. "avalanche", "fantom", "gnosis"), `resolve_chain()`
-   looks it up against the ethereum-lists/chains registry -- the same
+   SUPPORTED_CHAINS (e.g. "avalanche", "fantom", "gnosis", "monad"),
+   `resolve_chain()` maps the name to a numeric chain id -- via the small
+   hand-curated `_ALIAS_TO_CHAIN_ID` shortlist first, then the much larger
+   `CHAIN_NAME_TO_ID` table in chain_registry_data.py, which is generated
+   from every chain (mainnet, testnet, devnet -- ~2675 chains, ~5100 name/
+   shortName aliases) in the ethereum-lists/chains registry -- the same
    community-maintained, widely-trusted dataset that powers chainlist.org
-   and MetaMask's "add network" search. This is deliberately NOT a raw web
-   search: an autonomous agent that signs and broadcasts real transactions
-   should only pick up chain id / RPC data from a source with some
-   editorial/community vetting, not whatever a search engine returns first.
+   and MetaMask's "add network" search. Once we have a chain id, the RPC
+   list itself is always fetched fresh from that registry. This is
+   deliberately NOT a raw web search: an autonomous agent that signs and
+   broadcasts real transactions should only pick up chain id / RPC data
+   from a source with some editorial/community vetting, not whatever a
+   search engine returns first.
 
    Resolved chains are cached in-memory for the process lifetime via
    chains.register_dynamic_chain() so we don't re-fetch on every message.
@@ -29,6 +35,7 @@ from typing import Optional
 import httpx
 
 from backend.config.settings import settings
+from backend.wallet.chain_registry_data import CHAIN_NAME_TO_ID
 from backend.wallet.chains import ChainInfo, chain_by_key, register_dynamic_chain
 
 logger = logging.getLogger(__name__)
@@ -62,6 +69,14 @@ _ALIAS_TO_CHAIN_ID: dict[str, int] = {
     "fraxtal": 252,
     "sei": 1329,
     "taiko": 167000,
+    # Bare colloquial testnet names whose registry entry doesn't reduce to
+    # this form via the mainnet/testnet suffix-stripping in
+    # chain_registry_data.py (e.g. official name is "Ethereum Sepolia", not
+    # "Sepolia Testnet", so the generic stripper never produces "sepolia").
+    "sepolia": 11155111, "ethereum sepolia": 11155111,
+    "goerli": 5, "ethereum goerli": 5,
+    "holesky": 17000, "ethereum holesky": 17000,
+    "monad": 143, "monad mainnet": 143,
 }
 
 _REGISTRY_URL = "https://raw.githubusercontent.com/ethereum-lists/chains/master/_data/chains/eip155-{chain_id}.json"
@@ -109,7 +124,12 @@ async def resolve_chain(name_or_id: str) -> tuple[Optional[ChainInfo], list[str]
     if known:
         return known, get_rpc_candidates(known)
 
+    # 1) small hand-curated shortlist (slang/abbreviations) takes priority
+    # 2) full ethereum-lists/chains name/shortName table (~2675 chains,
+    #    mainnet + testnet + devnet) as a broad fallback
     chain_id: Optional[int] = _ALIAS_TO_CHAIN_ID.get(key)
+    if chain_id is None:
+        chain_id = CHAIN_NAME_TO_ID.get(key)
     if chain_id is None and key.isdigit():
         chain_id = int(key)
     if chain_id is None and key.startswith("0x"):
