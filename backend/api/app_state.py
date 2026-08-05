@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from backend.identity.registry import ProfileRegistry
     from backend.identity.manager import ProfileManager
     from backend.wallet.tx_batch import TxBatchManager
+    from backend.wallet.chain_confirm import ChainConfirmationManager
     from backend.identity.pending_profile import PendingProfileManager
 
 
@@ -34,6 +35,7 @@ class AppState:
     skills: Optional["SkillService"] = None
     teach: Optional["TeachModeManager"] = None
     tx_batch: Optional["TxBatchManager"] = None
+    chain_confirm: Optional["ChainConfirmationManager"] = None
     hot_signer: Optional["HotSigner"] = None
     mcp: Optional["MCPManager"] = None
     profile_registry: Optional["ProfileRegistry"] = None

@@ -242,6 +242,10 @@ class Settings(BaseSettings):
             ],
         }
 
+    # --- Web-search unknown chain resolution ---
+    chain_web_lookup_enabled: bool = Field(default=True, description="Enable web lookup fallback for unlisted EVM chains")
+    chain_confirmation_timeout_seconds: int = Field(default=600, description="Idle timeout for pending chain parameter confirmations in seconds")
+
     # --- Hot signer (direct RPC send) -----------------------------------
     # Opt-in, separate from the browser-extension wallet flow above. When
     # enabled, the backend itself holds a private key (env var only, never

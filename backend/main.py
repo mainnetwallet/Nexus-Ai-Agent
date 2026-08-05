@@ -47,6 +47,7 @@ from backend.planner.task_queue import TaskQueueService
 from backend.plugins.registry import PluginRegistry
 from backend.skills.library import SkillService
 from backend.skills.teach import TeachModeManager
+from backend.wallet.chain_confirm import ChainConfirmationManager
 from backend.wallet.hot_signer import (
     HotSigner,
     HotSignerDisabled,
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI):
     state.wallet = WalletManager()
     state.wallet_registry = WalletRegistry()
     state.tx_batch = TxBatchManager()
+    state.chain_confirm = ChainConfirmationManager()
     state.hot_signer = HotSigner(wallet_registry=state.wallet_registry)
 
     # If a hot-signer keystore file exists from a prior "save as hot signer"

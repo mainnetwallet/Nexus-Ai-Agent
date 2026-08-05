@@ -38,7 +38,8 @@ from eth_account.hdaccount import Mnemonic
 
 from backend.config.settings import BASE_DIR, settings
 from backend.wallet.chain_resolver import get_rpc_candidates, resolve_chain, rpc_post_with_fallback
-from backend.wallet.chains import ChainInfo, chain_by_key
+from backend.wallet.chain_web_lookup import WebChainCandidate, web_lookup_chain
+from backend.wallet.chains import ChainInfo, chain_by_key, register_dynamic_chain
 from backend.wallet.keystore import (
     LEGACY_ENTRY_ID,
     Keystore,
@@ -66,6 +67,14 @@ class HotSignerDisabled(HotSignerError):
 
 class HotSignerPersistError(HotSignerError):
     pass
+
+
+class ChainNeedsConfirmation(HotSignerError):
+    def __init__(self, candidate: WebChainCandidate) -> None:
+        self.candidate = candidate
+        super().__init__(
+            f"Unlisted chain {candidate.display_name!r} (ID={candidate.chain_id_int}) requires user confirmation."
+        )
 
 
 @dataclass
@@ -574,6 +583,8 @@ class HotSigner:
         wallet_id: Optional[str] = None,
         from_address: Optional[str] = None,
         nonce_override: Optional[int] = None,
+        confirmed_chain_id: Optional[int] = None,
+        confirmed_rpc_candidates: Optional[list[str]] = None,
     ) -> NativeTransferResult:
         """
         Send `amount_native` of the chain's native currency to `to_address`
@@ -594,21 +605,30 @@ class HotSigner:
         """
         private_key = _require_enabled(from_address)
 
-        chain = chain_by_key(chain_key)
-        rpc_candidates: list[str]
-        if chain is not None:
-            rpc_candidates = get_rpc_candidates(chain)
+        if confirmed_chain_id is not None and confirmed_rpc_candidates:
+            chain = ChainInfo(
+                key=chain_key.strip().lower().replace(" ", "-"),
+                display_name=chain_key.title(),
+                chain_id_hex=hex(confirmed_chain_id),
+                chain_id_int=confirmed_chain_id,
+            )
+            register_dynamic_chain(chain)
+            rpc_candidates = confirmed_rpc_candidates
         else:
-            # Not one of the hardcoded chains -- try to resolve it (by name
-            # or numeric chain id) against the chain registry before giving
-            # up. Covers "send on avalanche" etc. without us having to
-            # hand-wire every EVM chain in chains.py.
-            chain, rpc_candidates = await resolve_chain(chain_key)
-            if chain is None:
-                raise HotSignerError(
-                    f"Unsupported chain: {chain_key!r} "
-                    "(not hardcoded and not found in the chain registry)"
-                )
+            chain = chain_by_key(chain_key)
+            if chain is not None:
+                rpc_candidates = get_rpc_candidates(chain)
+            else:
+                chain, rpc_candidates = await resolve_chain(chain_key)
+                if chain is None:
+                    if settings.chain_web_lookup_enabled:
+                        candidate = await web_lookup_chain(chain_key)
+                        if candidate is not None:
+                            raise ChainNeedsConfirmation(candidate)
+                    raise HotSignerError(
+                        f"Unsupported chain: {chain_key!r} "
+                        "(not hardcoded and not found in the chain registry)"
+                    )
 
         if not rpc_candidates:
             raise HotSignerError(f"No usable RPC endpoint found for {chain.key!r}")
@@ -799,6 +819,8 @@ class HotSigner:
         wallet_id: Optional[str] = None,
         from_address: Optional[str] = None,
         nonce_override: Optional[int] = None,
+        confirmed_chain_id: Optional[int] = None,
+        confirmed_rpc_candidates: Optional[list[str]] = None,
     ) -> TokenTransferResult:
         """
         Send `amount_tokens` of an ERC20 token at `token_address` to
@@ -820,17 +842,30 @@ class HotSigner:
         """
         private_key = _require_enabled(from_address)
 
-        chain = chain_by_key(chain_key)
-        rpc_candidates: list[str]
-        if chain is not None:
-            rpc_candidates = get_rpc_candidates(chain)
+        if confirmed_chain_id is not None and confirmed_rpc_candidates:
+            chain = ChainInfo(
+                key=chain_key.strip().lower().replace(" ", "-"),
+                display_name=chain_key.title(),
+                chain_id_hex=hex(confirmed_chain_id),
+                chain_id_int=confirmed_chain_id,
+            )
+            register_dynamic_chain(chain)
+            rpc_candidates = confirmed_rpc_candidates
         else:
-            chain, rpc_candidates = await resolve_chain(chain_key)
-            if chain is None:
-                raise HotSignerError(
-                    f"Unsupported chain: {chain_key!r} "
-                    "(not hardcoded and not found in the chain registry)"
-                )
+            chain = chain_by_key(chain_key)
+            if chain is not None:
+                rpc_candidates = get_rpc_candidates(chain)
+            else:
+                chain, rpc_candidates = await resolve_chain(chain_key)
+                if chain is None:
+                    if settings.chain_web_lookup_enabled:
+                        candidate = await web_lookup_chain(chain_key)
+                        if candidate is not None:
+                            raise ChainNeedsConfirmation(candidate)
+                    raise HotSignerError(
+                        f"Unsupported chain: {chain_key!r} "
+                        "(not hardcoded and not found in the chain registry)"
+                    )
 
         if not rpc_candidates:
             raise HotSignerError(f"No usable RPC endpoint found for {chain.key!r}")

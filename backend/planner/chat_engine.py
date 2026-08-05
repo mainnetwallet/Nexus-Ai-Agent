@@ -82,6 +82,7 @@ from backend.identity.manager import ProfileManager
 from backend.identity.pending_profile import PendingTask
 from backend.wallet.hot_signer import (
     BatchTransferResult,
+    ChainNeedsConfirmation,
     HotSignerDisabled,
     HotSignerError,
     get_hot_signer_address,
@@ -591,6 +592,17 @@ class ChatEngine:
                 reply, meta = f"Something went wrong queuing that: {exc}", {}
             await self._append(session.id, ChatRole.ASSISTANT, reply, category="wallet", meta=meta)
             return {"session_id": session.id, "reply": reply, "category": "wallet", "action": "batch_step", "meta": meta}
+
+        # Pending chain confirmation interception
+        chain_confirm = getattr(self.app_state, "chain_confirm", None) if self.app_state else None
+        if chain_confirm is not None and chain_confirm.is_active(session.id):
+            try:
+                reply, meta = await self._handle_chain_confirm_turn(session, chain_confirm, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Chain confirmation turn failed")
+                reply, meta = f"Something went wrong during chain confirmation: {exc}", {}
+            await self._append(session.id, ChatRole.ASSISTANT, reply, category="wallet", meta=meta)
+            return {"session_id": session.id, "reply": reply, "category": "wallet", "action": "chain_confirm_step", "meta": meta}
 
         # Pending Chrome Profile selection: intercepted BEFORE intent
         # classification, same pattern as Teach Mode / tx batch above. Every
@@ -1109,10 +1121,10 @@ class ChatEngine:
             return await self._handle_wallet_crud(session, action, intent)
 
         if action == "send_native":
-            return await self._handle_send_native(intent, text)
+            return await self._handle_send_native(intent, text, session=session)
 
         if action == "send_token":
-            return await self._handle_send_token(intent, text)
+            return await self._handle_send_token(intent, text, session=session)
 
         tx_batch = getattr(self.app_state, "tx_batch", None) if self.app_state else None
         if tx_batch is None:
@@ -1144,7 +1156,7 @@ class ChatEngine:
                     "send_chain": reextracted.get("chain") or intent.get("send_chain") or "",
                     "send_amount": reextracted.get("amount") or intent.get("send_amount") or "",
                 }
-            return await self._handle_send_native(intent, text)
+            return await self._handle_send_native(intent, text, session=session)
 
         try:
             count = int(intent.get("tx_count") or 0)
@@ -1230,7 +1242,14 @@ class ChatEngine:
         }
         return reply, meta
 
-    async def _handle_send_native(self, intent: dict, text: str = "") -> tuple[str, dict]:
+    async def _handle_send_native(
+        self,
+        intent: dict,
+        text: str = "",
+        session: Optional[ChatSession] = None,
+        confirmed_chain_id: Optional[int] = None,
+        confirmed_rpc_candidates: Optional[list[str]] = None,
+    ) -> tuple[str, dict]:
         """
         Direct RPC native-token transfer via backend.wallet.hot_signer.HotSigner
         -- a deliberately separate path from the browser-extension approval
@@ -1268,7 +1287,25 @@ class ChatEngine:
             to_address = to_addresses[0]
             from_address = from_addresses[0] if from_addresses else None
             try:
-                result = await hot_signer.send_native(chain, to_address, amount, from_address=from_address)
+                result = await hot_signer.send_native(
+                    chain, to_address, amount, from_address=from_address,
+                    confirmed_chain_id=confirmed_chain_id,
+                    confirmed_rpc_candidates=confirmed_rpc_candidates,
+                )
+            except ChainNeedsConfirmation as exc:
+                if session and getattr(self.app_state, "chain_confirm", None):
+                    self.app_state.chain_confirm.start(session.id, exc.candidate, intent, text)
+                rpcs = "\n".join(f"  - {r}" for r in exc.candidate.rpc_candidates[:3])
+                return (
+                    f"⚠️ **Unlisted Chain Confirmation Required**\n"
+                    f"The chain '{exc.candidate.display_name}' was not found in the local registry.\n"
+                    f"Web search suggests the following parameters:\n"
+                    f"- **Display Name:** {exc.candidate.display_name}\n"
+                    f"- **Chain ID:** {exc.candidate.chain_id_int} ({exc.candidate.chain_id_hex})\n"
+                    f"- **RPC Candidates:**\n{rpcs}\n\n"
+                    f"Please confirm `chain_id` + RPC endpoints before sending. Reply **\"yes\"** / **\"confirm\"** to accept, or **\"cancel\"** to abort.",
+                    {"needs_chain_confirmation": True, "chain_id": exc.candidate.chain_id_int, "rpc_candidates": exc.candidate.rpc_candidates},
+                )
             except HotSignerDisabled as exc:
                 return str(exc), {}
             except HotSignerError as exc:
@@ -1287,7 +1324,14 @@ class ChatEngine:
             return f"Batch send failed: {exc}", {}
         return self._format_batch_reply(batch_result)
 
-    async def _handle_send_token(self, intent: dict, text: str = "") -> tuple[str, dict]:
+    async def _handle_send_token(
+        self,
+        intent: dict,
+        text: str = "",
+        session: Optional[ChatSession] = None,
+        confirmed_chain_id: Optional[int] = None,
+        confirmed_rpc_candidates: Optional[list[str]] = None,
+    ) -> tuple[str, dict]:
         """
         Direct RPC ERC20 transfer via backend.wallet.hot_signer.HotSigner --
         same no-approval-popup path as _handle_send_native, just calling
@@ -1332,7 +1376,25 @@ class ChatEngine:
             to_address = to_addresses[0]
             from_address = from_addresses[0] if from_addresses else None
             try:
-                result = await hot_signer.send_token(chain, token_address, to_address, amount, from_address=from_address)
+                result = await hot_signer.send_token(
+                    chain, token_address, to_address, amount, from_address=from_address,
+                    confirmed_chain_id=confirmed_chain_id,
+                    confirmed_rpc_candidates=confirmed_rpc_candidates,
+                )
+            except ChainNeedsConfirmation as exc:
+                if session and getattr(self.app_state, "chain_confirm", None):
+                    self.app_state.chain_confirm.start(session.id, exc.candidate, intent, text)
+                rpcs = "\n".join(f"  - {r}" for r in exc.candidate.rpc_candidates[:3])
+                return (
+                    f"⚠️ **Unlisted Chain Confirmation Required**\n"
+                    f"The chain '{exc.candidate.display_name}' was not found in the local registry.\n"
+                    f"Web search suggests the following parameters:\n"
+                    f"- **Display Name:** {exc.candidate.display_name}\n"
+                    f"- **Chain ID:** {exc.candidate.chain_id_int} ({exc.candidate.chain_id_hex})\n"
+                    f"- **RPC Candidates:**\n{rpcs}\n\n"
+                    f"Please confirm `chain_id` + RPC endpoints before sending. Reply **\"yes\"** / **\"confirm\"** to accept, or **\"cancel\"** to abort.",
+                    {"needs_chain_confirmation": True, "chain_id": exc.candidate.chain_id_int, "rpc_candidates": exc.candidate.rpc_candidates},
+                )
             except HotSignerDisabled as exc:
                 return str(exc), {}
             except HotSignerError as exc:
@@ -1356,6 +1418,36 @@ class ChatEngine:
         except HotSignerError as exc:
             return f"Batch send failed: {exc}", {}
         return self._format_batch_reply(batch_result)
+
+    async def _handle_chain_confirm_turn(self, session: ChatSession, chain_confirm: Any, text: str) -> tuple[str, dict]:
+        clean = text.strip().lower()
+        if clean in ("cancel", "no", "abort", "n"):
+            chain_confirm.cancel(session.id)
+            return "Chain parameter confirmation canceled. Transaction aborted.", {"status": "canceled"}
+
+        if clean in ("yes", "y", "confirm", "proceed", "ok"):
+            pending = chain_confirm.pop_confirmed(session.id)
+            if not pending:
+                return "Chain confirmation request has expired or was not found.", {}
+
+            action = (pending.intent.get("wallet_action") or pending.intent.get("action") or "").strip().lower()
+            if action == "send_token":
+                return await self._handle_send_token(
+                    pending.intent, pending.text, session=session,
+                    confirmed_chain_id=pending.candidate.chain_id_int,
+                    confirmed_rpc_candidates=pending.candidate.rpc_candidates,
+                )
+            return await self._handle_send_native(
+                pending.intent, pending.text, session=session,
+                confirmed_chain_id=pending.candidate.chain_id_int,
+                confirmed_rpc_candidates=pending.candidate.rpc_candidates,
+            )
+
+        return (
+            "Please reply **\"confirm\"** (or **\"yes\"**) to confirm the chain ID and RPC endpoints and broadcast the transaction, "
+            "or **\"cancel\"** to abort.",
+            {},
+        )
 
     async def _handle_batch_turn(self, session: ChatSession, tx_batch: Any, text: str) -> tuple[str, dict]:
         """One turn of an active transaction batch (backend.wallet.
