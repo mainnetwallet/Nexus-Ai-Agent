@@ -473,24 +473,24 @@ class BrowserEngine:
             has_challenge = any(k in text or k in url for k in challenge_keywords)
 
             # Strategy 1: Direct mouse coordinate click on Cloudflare Turnstile / Challenge iframes
-            turnstile_iframes = self.page.locator(
-                'iframe[src*="cloudflare"], iframe[src*="turnstile"], iframe[title*="Turnstile"], iframe[title*="Cloudflare"]'
-            )
             try:
-                iframe_count = await turnstile_iframes.count()
-                for i in range(iframe_count):
-                    iframe_el = turnstile_iframes.nth(i)
-                    if await iframe_el.is_visible(timeout=500):
-                        box = await iframe_el.bounding_box()
-                        if box and box["width"] > 0 and box["height"] > 0:
-                            click_x = box["x"] + 35
-                            click_y = box["y"] + min(35.0, box["height"] / 2.0)
-                            logger.info("Cloudflare Turnstile iframe detected. Performing mouse click at (%f, %f)...", click_x, click_y)
-                            await self.page.mouse.move(click_x, click_y)
-                            await asyncio.sleep(0.15)
-                            await self.page.mouse.click(click_x, click_y)
-                            await self._settle(ms=3000)
-                            return True
+                for frame in self.page.frames:
+                    if any(k in frame.url.lower() for k in ("cloudflare", "turnstile")):
+                        try:
+                            frame_el = await frame.frame_element()
+                            if await frame_el.is_visible():
+                                box = await frame_el.bounding_box()
+                                if box and box["width"] > 0 and box["height"] > 0:
+                                    click_x = box["x"] + 35
+                                    click_y = box["y"] + min(35.0, box["height"] / 2.0)
+                                    logger.info("Cloudflare Turnstile iframe detected. Performing mouse click at (%f, %f)...", click_x, click_y)
+                                    await self.page.mouse.move(click_x, click_y)
+                                    await asyncio.sleep(0.15)
+                                    await self.page.mouse.click(click_x, click_y)
+                                    await self._settle(ms=3000)
+                                    return True
+                        except Exception:
+                            continue
             except Exception as cf_exc:
                 logger.debug("Turnstile direct iframe click error: %s", cf_exc)
 
@@ -543,19 +543,19 @@ class BrowserEngine:
 
             # Strategy 3: Direct iframe bounding box click fallback
             if has_challenge:
-                iframe_loc = self.page.locator(
-                    'iframe[src*="cloudflare"], iframe[title*="Turnstile"], iframe[title*="Cloudflare"], '
-                    'iframe[src*="recaptcha"], iframe[title*="reCAPTCHA"], iframe[src*="hcaptcha"], '
-                    'iframe[title*="hCaptcha"], iframe[title*="security"], iframe[title*="challenge"], '
-                    'iframe[src*="arkose"], iframe[src*="funcaptcha"]'
-                ).first
-                if await iframe_loc.is_visible(timeout=1000):
-                    logger.info("Clicking security challenge iframe element via coordinates...")
-                    box = await iframe_loc.bounding_box()
-                    if box:
-                        await self.page.mouse.click(box["x"] + min(35.0, box["width"]/2.0), box["y"] + box["height"] / 2.0)
-                        await self._settle(ms=3000)
-                        return True
+                for frame in self.page.frames:
+                    if any(k in frame.url.lower() or (frame.name and k in frame.name.lower()) for k in ("cloudflare", "turnstile", "recaptcha", "hcaptcha", "security", "challenge", "arkose", "funcaptcha")):
+                        try:
+                            frame_el = await frame.frame_element()
+                            if await frame_el.is_visible():
+                                logger.info("Clicking security challenge iframe element via coordinates...")
+                                box = await frame_el.bounding_box()
+                                if box and box["width"] > 0 and box["height"] > 0:
+                                    await self.page.mouse.click(box["x"] + min(35.0, box["width"]/2.0), box["y"] + box["height"] / 2.0)
+                                    await self._settle(ms=3000)
+                                    return True
+                        except Exception:
+                            continue
         except Exception as exc:
             logger.debug("auto_handle_security_verification error: %s", exc)
         return False
