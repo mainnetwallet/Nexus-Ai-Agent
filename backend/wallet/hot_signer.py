@@ -26,6 +26,7 @@ Hard rules for this module:
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,13 @@ class TokenTransferResult:
 _ERC20_TRANSFER_SELECTOR = "a9059cbb"    # transfer(address,uint256)
 _ERC20_DECIMALS_SELECTOR = "313ce567"    # decimals()
 _ERC20_BALANCE_OF_SELECTOR = "70a08231"  # balanceOf(address)
+
+GAS_BUMP_PCT = 0.05  # +5% margin on both gas limit and gas price for every hot-signer tx
+
+
+def _bump(value: int) -> int:
+    """Apply the +5% gas margin, rounding up (ceil) so small values still get bumped."""
+    return value + math.ceil(value * GAS_BUMP_PCT)
 
 
 def _encode_address_param(address: str) -> str:
@@ -566,15 +574,15 @@ class HotSigner:
         nonce = await self._rpc_call(
             rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
         )
-        gas_price = await self._rpc_call(rpc_candidates, "eth_gasPrice", [])
+        gas_price = _bump(int(await self._rpc_call(rpc_candidates, "eth_gasPrice", []), 16))
 
         tx = {
             "chainId": chain.chain_id_int,
             "nonce": int(nonce, 16),
             "to": to_address,
             "value": amount_wei,
-            "gas": 21000,  # plain native transfer, no calldata
-            "gasPrice": int(gas_price, 16),
+            "gas": _bump(21000),  # plain native transfer, no calldata, +5% margin
+            "gasPrice": gas_price,
         }
 
         signed = account.sign_transaction(tx)
@@ -697,10 +705,10 @@ class HotSigner:
         nonce = await self._rpc_call(
             rpc_candidates, "eth_getTransactionCount", [from_address, "pending"]
         )
-        gas_price = await self._rpc_call(rpc_candidates, "eth_gasPrice", [])
-        gas_limit = await self._estimate_gas_with_fallback(
+        gas_price = _bump(int(await self._rpc_call(rpc_candidates, "eth_gasPrice", []), 16))
+        gas_limit = _bump(await self._estimate_gas_with_fallback(
             rpc_candidates, from_address, token_address, calldata
-        )
+        ))
 
         tx = {
             "chainId": chain.chain_id_int,
@@ -708,7 +716,7 @@ class HotSigner:
             "to": token_address,
             "value": 0,
             "gas": gas_limit,
-            "gasPrice": int(gas_price, 16),
+            "gasPrice": gas_price,
             "data": calldata,
         }
 
