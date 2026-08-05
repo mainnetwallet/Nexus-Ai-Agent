@@ -523,16 +523,30 @@ function LearnFromTextForm({ onLearned }: { onLearned: () => void }) {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!text.trim()) return
+    const trimmed = text.trim()
+    if (!trimmed) return
     setSubmitting(true)
     try {
-      const result = await api.skills.learnFromText(text.trim())
-      if (result.created) {
-        toast.push(`Learned "${result.skill?.name}"`, "success")
+      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        const res = await api.skills.importFromUrl(trimmed)
+        const count = Number(res.skills_created ?? 0) + Number(res.skills_updated ?? 0)
+        toast.push(`Extracted & indexed ${count} skills from GitHub (${res.repository || "repo"})`, "success")
         setText("")
         onLearned()
       } else {
-        toast.push(result.reason || "Couldn't extract concrete steps from that description", "error")
+        const result = await api.skills.learnFromText(trimmed)
+        if (result.created) {
+          if (result.source === "url" && result.import_result) {
+            const count = Number(result.import_result.skills_created ?? 0) + Number(result.import_result.skills_updated ?? 0)
+            toast.push(`Extracted & indexed ${count} skills from URL`, "success")
+          } else {
+            toast.push(`Learned "${result.skill?.name}"`, "success")
+          }
+          setText("")
+          onLearned()
+        } else {
+          toast.push(result.reason || "Couldn't extract concrete steps from that description", "error")
+        }
       }
     } catch (err) {
       toast.push(err instanceof Error ? err.message : "Failed to learn skill", "error")
@@ -544,19 +558,18 @@ function LearnFromTextForm({ onLearned }: { onLearned: () => void }) {
   return (
     <form onSubmit={handleSubmit}>
       <DialogHeader>
-        <DialogTitle>Learn a skill from text</DialogTitle>
+        <DialogTitle>Learn from text or GitHub URL</DialogTitle>
         <DialogDescription>
-          Describe a workflow in plain language — steps, the site it applies to, and what varies each time
-          — and the agent will turn it into a replayable skill.
+          Paste a <strong>GitHub Repository URL</strong> (e.g. <code>https://github.com/owner/repo</code>) or describe a workflow in plain text — the agent will automatically analyze, extract, and index all reusable skills into memory.
         </DialogDescription>
       </DialogHeader>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="skill-text">Description</Label>
+      <div className="flex flex-col gap-1.5 my-4">
+        <Label htmlFor="skill-text">GitHub URL or Text Description</Label>
         <Textarea
           id="skill-text"
-          rows={6}
-          placeholder='e.g. "To check the gas price, open etherscan.io/gastracker and read the standard gwei value."'
+          rows={5}
+          placeholder='Paste GitHub URL (e.g. https://github.com/owner/repository) OR describe a workflow in text...'
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
@@ -564,7 +577,7 @@ function LearnFromTextForm({ onLearned }: { onLearned: () => void }) {
 
       <DialogFooter>
         <Button type="submit" disabled={submitting}>
-          {submitting ? "Learning…" : "Learn skill"}
+          {submitting ? "Analyzing & extracting skills…" : "Learn / Import Skill"}
         </Button>
       </DialogFooter>
     </form>

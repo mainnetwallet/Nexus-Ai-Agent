@@ -1107,10 +1107,15 @@ export const api = {
       }),
 
     learnFromText: (text: string) =>
-      request<{ created: boolean; skill?: Skill; draft?: Record<string, unknown>; reason?: string }>(
+      request<{ created: boolean; skill?: Skill; draft?: Record<string, unknown>; reason?: string; source?: string; import_result?: Record<string, unknown> }>(
         "/api/skills/learn",
         { method: "POST", body: JSON.stringify({ text }) }
       ),
+    importFromUrl: (url: string) =>
+      request<Record<string, unknown>>("/api/skills/import-url", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      }),
     correct: (input: { skill_id: string; step_index: number; instruction: string }) =>
       request<Skill>("/api/skills/correct", { method: "POST", body: JSON.stringify(input) }),
 
@@ -1139,4 +1144,6 @@ export const api = {
         request<{ active: boolean; draft: TeachDraft | null }>(`/api/skills/teach/${sessionId}`),
     },
   },
+
+  wsUrl,
 }

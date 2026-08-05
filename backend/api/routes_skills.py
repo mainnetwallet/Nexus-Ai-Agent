@@ -128,6 +128,10 @@ class CorrectionRequest(BaseModel):
     instruction: str
 
 
+class ImportUrlRequest(BaseModel):
+    url: str
+
+
 # ---------------------------------------------------------------- #
 # CRUD
 # ---------------------------------------------------------------- #
@@ -332,12 +336,24 @@ async def import_from_task_history(task_id: str, req: RecordedWorkflowRequest | 
 # ---------------------------------------------------------------- #
 @router.post("/learn")
 async def learn_from_text(req: LearnFromTextRequest):
-    """Learn a skill from one natural-language description end-to-end."""
-    draft = await _teach().parse_skill_from_text(req.text)
+    """Learn a skill from one natural-language description end-to-end.
+    If the text is a URL that a skill provider can handle (e.g. GitHub),
+    auto-routes to the URL-based import pipeline instead."""
+    text = req.text.strip()
+
+    # Auto-detect URLs and route to the URL import pipeline
+    if text.startswith(("http://", "https://")):
+        from backend.skills.providers.registry import get_registry
+        registry = get_registry()
+        if registry.can_handle(text):
+            result = await _library().import_from_url(text)
+            return {"created": True, "source": "url", "import_result": result}
+
+    draft = await _teach().parse_skill_from_text(text)
     if not draft.get("workflow"):
         return {"created": False, "draft": draft, "reason": "Could not extract concrete steps from that description."}
     skill = await _library().create(
-        name=draft["name"] or req.text[:60],
+        name=draft["name"] or text[:60],
         description=draft.get("description", ""),
         category=draft.get("category", "general"),
         trigger=draft.get("trigger", ""),
@@ -347,6 +363,18 @@ async def learn_from_text(req: LearnFromTextRequest):
         source=SkillSource.NATURAL_LANGUAGE,
     )
     return {"created": True, "skill": skill}
+
+
+@router.post("/import-url")
+async def import_from_url(req: ImportUrlRequest):
+    """Import skills from a GitHub repository (or any supported URL).
+    Clones the repository, analyzes it with LLM, extracts reusable skills,
+    deduplicates against existing skills, and saves them to the library."""
+    try:
+        result = await _library().import_from_url(req.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result
 
 
 @router.post("/correct")

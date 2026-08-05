@@ -348,6 +348,7 @@ class SkillSource(str, enum.Enum):
     CORRECTION = "correction"
     IMPORTED = "imported"
     MANUAL = "manual"
+    GITHUB = "github"
 
 
 class Skill(Base):

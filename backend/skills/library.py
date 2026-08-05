@@ -458,3 +458,129 @@ class SkillService:
         for s in skills:
             await self._reindex(s)
         return len(skills)
+
+    # ------------------------------------------------------------------ #
+    # GitHub / URL-based skill import
+    # ------------------------------------------------------------------ #
+    async def import_from_url(self, url: str) -> dict[str, Any]:
+        """
+        High-level entry point: fetch a URL via the provider registry,
+        extract skills with the LLM, deduplicate, persist, and index.
+
+        Returns a summary dict:
+          {"url", "provider", "repository", "skills_created",
+           "skills_updated", "skills_skipped", "skills": [...]}
+        """
+        from backend.skills.extractor import SkillExtractor
+        from backend.skills.providers.registry import get_registry
+
+        registry = get_registry()
+        if not registry.can_handle(url):
+            raise ValueError(f"No provider found for URL: {url}")
+
+        # 1. Fetch the source context
+        ctx = await registry.fetch(url)
+
+        # 2. Extract skills via LLM
+        extractor = SkillExtractor()
+        raw_skills = await extractor.extract(ctx)
+
+        if not raw_skills:
+            return {
+                "url": url,
+                "provider": "github",
+                "repository": f"{ctx.owner}/{ctx.repo}",
+                "skills_created": 0,
+                "skills_updated": 0,
+                "skills_skipped": 0,
+                "skills": [],
+            }
+
+        # 3. Check for existing skills from the same repo (deduplication)
+        existing_by_name = await self._get_github_skills_by_repo(f"{ctx.owner}/{ctx.repo}")
+
+        created = 0
+        updated = 0
+        skipped = 0
+        saved_skills: list[dict] = []
+
+        for raw in raw_skills:
+            name = raw.get("name", "")
+            if not name:
+                skipped += 1
+                continue
+
+            existing = existing_by_name.get(name)
+
+            if existing:
+                # Check if content changed (via content_hash)
+                old_meta = existing.get("_metadata", {})
+                if old_meta.get("content_hash") == ctx.content_hash:
+                    skipped += 1
+                    continue
+
+                # Update existing skill
+                patch = {
+                    "description": raw.get("description", ""),
+                    "category": raw.get("category", "general"),
+                    "trigger": raw.get("trigger", ""),
+                    "variables": raw.get("variables", []),
+                    "workflow": raw.get("workflow", []),
+                    "website_hint": raw.get("website_hint"),
+                }
+                result = await self.update(
+                    existing["id"],
+                    patch,
+                    change_note=f"updated from GitHub {ctx.owner}/{ctx.repo} @ {(ctx.commit_sha or '')[:12]}",
+                )
+                if result:
+                    saved_skills.append(result)
+                    updated += 1
+                else:
+                    skipped += 1
+            else:
+                # Create new skill
+                skill = await self.create(
+                    name=name,
+                    description=raw.get("description", ""),
+                    category=raw.get("category", "general"),
+                    trigger=raw.get("trigger", ""),
+                    variables=raw.get("variables"),
+                    workflow=raw.get("workflow"),
+                    website_hint=raw.get("website_hint"),
+                    source=SkillSource.GITHUB,
+                )
+                saved_skills.append(skill)
+                created += 1
+
+        logger.info(
+            "GitHub import complete: %s/%s → created=%d updated=%d skipped=%d",
+            ctx.owner, ctx.repo, created, updated, skipped,
+        )
+
+        return {
+            "url": url,
+            "provider": "github",
+            "repository": f"{ctx.owner}/{ctx.repo}",
+            "commit_sha": ctx.commit_sha,
+            "primary_language": ctx.primary_language,
+            "files_scanned": len(ctx.files),
+            "skills_created": created,
+            "skills_updated": updated,
+            "skills_skipped": skipped,
+            "skills": saved_skills,
+        }
+
+    async def _get_github_skills_by_repo(self, repo: str) -> dict[str, dict]:
+        """
+        Return a {name: skill_dict} map of all existing GITHUB-sourced skills
+        whose name starts with ``[owner/repo]``.
+        """
+        all_skills = await self.list()
+        prefix = f"[{repo}]"
+        out: dict[str, dict] = {}
+        for s in all_skills:
+            src = s.get("source", "")
+            if src == "github" and s["name"].startswith(prefix):
+                out[s["name"]] = s
+        return out
