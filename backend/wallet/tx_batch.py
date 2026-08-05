@@ -25,6 +25,7 @@ tasks back-to-back from chat does not change how each one gets approved.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -37,17 +38,31 @@ class TxBatchDraft:
     wallet_label: Optional[str]
     total: int
     queued: list[str] = field(default_factory=list)  # task_ids queued so far, in order
+    last_activity: float = field(default_factory=time.monotonic)
 
     @property
     def remaining(self) -> int:
         return max(self.total - len(self.queued), 0)
 
 
+# Same rationale as backend.skills.teach.TeachModeManager's idle timeout:
+# an abandoned batch draft (e.g. started by a misclassification) would
+# otherwise trap every later message in the session indefinitely.
+_IDLE_TIMEOUT_SECONDS = 15 * 60
+
+
 class TxBatchManager:
     def __init__(self) -> None:
         self._drafts: dict[str, TxBatchDraft] = {}
 
+    def _expire_if_idle(self, session_id: str) -> None:
+        draft = self._drafts.get(session_id)
+        if draft is not None and (time.monotonic() - draft.last_activity) > _IDLE_TIMEOUT_SECONDS:
+            logger.info("Tx batch draft expired from inactivity: session=%s", session_id)
+            self._drafts.pop(session_id, None)
+
     def is_active(self, session_id: str) -> bool:
+        self._expire_if_idle(session_id)
         draft = self._drafts.get(session_id)
         return draft is not None and draft.remaining > 0
 
@@ -58,6 +73,7 @@ class TxBatchManager:
         return draft
 
     def get_draft(self, session_id: str) -> Optional[TxBatchDraft]:
+        self._expire_if_idle(session_id)
         return self._drafts.get(session_id)
 
     def record_queued(self, session_id: str, task_id: str) -> Optional[TxBatchDraft]:
@@ -69,6 +85,7 @@ class TxBatchManager:
         if draft is None:
             return None
         draft.queued.append(task_id)
+        draft.last_activity = time.monotonic()
         if draft.remaining <= 0:
             self._drafts.pop(session_id, None)
             logger.info("Tx batch complete: session=%s queued=%d", session_id, len(draft.queued))

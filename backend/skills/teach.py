@@ -21,6 +21,7 @@ drafts in memory -- exactly like backend.skills.library.SkillService's
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -81,6 +82,16 @@ class TeachDraft:
     website_hint: str = ""
     variables: list[dict[str, Any]] = field(default_factory=list)
     steps: list[dict[str, Any]] = field(default_factory=list)
+    last_activity: float = field(default_factory=time.monotonic)
+
+
+# If a Teach Mode session sits idle this long (no step added, no undo/done/
+# cancel), it's auto-expired on next access. Without this, an abandoned
+# draft -- e.g. from a misclassified message that started Teach Mode by
+# accident -- traps every later message in the session as a "step" forever
+# (an ordinary "Hi" or a question gets recorded as a workflow step instead
+# of answered), with no way out except knowing to type "cancel".
+_IDLE_TIMEOUT_SECONDS = 15 * 60
 
 
 class TeachModeManager:
@@ -91,7 +102,14 @@ class TeachModeManager:
     # ------------------------------------------------------------------ #
     # Session lifecycle
     # ------------------------------------------------------------------ #
+    def _expire_if_idle(self, session_id: str) -> None:
+        draft = self._drafts.get(session_id)
+        if draft is not None and (time.monotonic() - draft.last_activity) > _IDLE_TIMEOUT_SECONDS:
+            logger.info("Teach Mode draft expired from inactivity: session=%s", session_id)
+            self._drafts.pop(session_id, None)
+
     def is_active(self, session_id: str) -> bool:
+        self._expire_if_idle(session_id)
         return session_id in self._drafts
 
     def start(self, session_id: str, name: str = "", trigger: str = "", website_hint: str = "") -> TeachDraft:
@@ -103,6 +121,7 @@ class TeachModeManager:
         return self._drafts.pop(session_id, None) is not None
 
     def get_draft(self, session_id: str) -> Optional[TeachDraft]:
+        self._expire_if_idle(session_id)
         return self._drafts.get(session_id)
 
     def undo_last_step(self, session_id: str) -> bool:
@@ -110,6 +129,7 @@ class TeachModeManager:
         if not draft or not draft.steps:
             return False
         draft.steps.pop()
+        draft.last_activity = time.monotonic()
         return True
 
     def add_step_raw(self, session_id: str, action: str, target: str, value: str = "", description: str = "") -> bool:
@@ -117,6 +137,7 @@ class TeachModeManager:
         if not draft:
             return False
         draft.steps.append({"action": action, "target": target, "value": value, "description": description})
+        draft.last_activity = time.monotonic()
         return True
 
     async def add_step_from_text(self, session_id: str, text: str) -> Optional[dict[str, Any]]:
@@ -135,6 +156,7 @@ class TeachModeManager:
             "description": step.get("description", text),
         }
         draft.steps.append(step)
+        draft.last_activity = time.monotonic()
         return step
 
     def finish(self, session_id: str) -> Optional[TeachDraft]:
