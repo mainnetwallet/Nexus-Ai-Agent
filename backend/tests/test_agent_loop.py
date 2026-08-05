@@ -132,3 +132,28 @@ async def test_agent_loop_cancels_after_resuming_from_pause():
 
     assert outcome.status == "cancelled"
     assert engine._clicked == []
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_different_targets_same_url_does_not_stall():
+    class FakeTypeEngine(FakeEngine):
+        async def smart_type(self, target, value):
+            return True
+
+    # 4 distinct field inputs on the same URL followed by finish
+    llm = FakeLLM([
+        {"action": "type", "target": "input:field1", "value": "val1", "reasoning": "field 1"},
+        {"action": "type", "target": "input:field2", "value": "val2", "reasoning": "field 2"},
+        {"action": "type", "target": "input:field3", "value": "val3", "reasoning": "field 3"},
+        {"action": "click", "target": "Submit", "value": "", "reasoning": "submit form"},
+        {"action": "finish", "target": "", "value": "", "reasoning": "form submitted"},
+    ])
+    engine = FakeTypeEngine()
+    memory = FakeMemory()
+
+    loop = AgentLoop(engine=engine, memory=memory, llm=llm, max_steps=10)
+    outcome = await loop.run(website="https://example.com", goal="fill form")
+
+    assert outcome.status == "succeeded"
+    assert len(outcome.steps) == 4
+

@@ -118,6 +118,7 @@ class AgentLoop:
 
         stall_count = 0
         last_url = None
+        last_action_target = None
         recovery_context = ""
 
         for step_index in range(self.max_steps):
@@ -206,18 +207,20 @@ class AgentLoop:
 
             # Stall detection: A same-URL result is expected for in-page actions
             # (scrolling, typing, filling forms, clicking dropdowns/tabs). Only
-            # increment stall_count if the action failed, or if non-scroll actions
-            # repeat on the exact same URL multiple times.
+            # increment stall_count if the action failed, or if the EXACT SAME
+            # action and target are repeated on the exact same URL consecutively.
+            action_target = (action, target)
             if not success:
                 stall_count += 1
             elif action == StepAction.SCROLL.value:
                 # Successful scroll is intentional in-page movement; avoid false stalls
                 stall_count = max(0, stall_count - 1)
-            elif url_after == last_url:
+            elif url_after == last_url and action_target == last_action_target:
                 stall_count += 1
             else:
                 stall_count = 0
             last_url = url_after
+            last_action_target = action_target
 
             # Advisory-only: folded into the next decide() call's prompt so
             # the planner sees what went wrong, without changing control flow.
