@@ -260,7 +260,11 @@ transactions using my burner wallet" -- a request to START a multi-step batch of
 with a count but not yet the individual destinations -> category=wallet wallet_action=batch_start \
 tx_count=<N> wallet_label=<if a wallet is named, else empty>. Do NOT classify this as category=task -- \
 there is no single website/goal yet, only a count; the destinations come in later messages once the \
-batch has started.
+batch has started. IMPORTANT: if the message ALREADY contains the destination address(es)/amount \
+(e.g. a task spec listing "0x..." addresses and an amount, even if it also says things like "execute 3 \
+separate transactions" or "one transaction per recipient"), this is NOT batch_start -- classify it as \
+wallet_action=send_native (or send_token) instead, per the multi-address rule below. batch_start is only \
+for when the count is known but the destinations are not yet in the message.
 - "list my wallets" / "show wallets" -> category=wallet wallet_action=list
 - "import a wallet" / "add wallet X" (no secret, no method yet) -> category=wallet wallet_action=import \
 wallet_label=X
@@ -348,6 +352,18 @@ uniswap.org", "send 5 USDC to bob.eth", "the same site, address 0xdef..."). Extr
 concrete goal for just this one step. Respond with STRICT JSON only, no prose, no markdown fences:
 {"website": "url or domain to act on, else empty", "goal": "one sentence describing exactly what to do \
 on that site for this one transaction"}"""
+
+# Used only as a targeted fallback in _handle_wallet_command (see the
+# batch_start deterministic reroute): re-extracts chain + amount for a
+# message that clearly already contains destination address(es), for
+# cases where the main classifier mislabeled it batch_start and so left
+# send_chain/send_amount empty by design.
+SEND_NATIVE_REEXTRACTION_PROMPT = """The user's message describes a native-token (ETH/MATIC/BNB/etc) \
+wallet transfer -- extract which chain/network and what amount, regardless of phrasing, language \
+(English/Bengali/Banglish), or how many destination addresses are listed. Respond with STRICT JSON only, \
+no prose, no markdown fences:
+{"chain": "one of: ethereum | polygon | arbitrum | optimism | base | bsc, else empty", \
+"amount": "the numeric amount to send to EACH destination, as a plain string e.g. \\"0.05\\", else empty"}"""
 
 
 # Wallet-secret guard: matched locally, never sent to any LLM (classifier or
@@ -1108,6 +1124,27 @@ class ChatEngine:
                 "or \"list my wallets\".",
                 {},
             )
+
+        # Deterministic safety net: the classifier can still occasionally
+        # call a message batch_start (count-only, destinations to follow)
+        # even when the message already contains the destination
+        # address(es) -- e.g. a task spec listing addresses plus phrasing
+        # like "execute 3 separate transactions". If addresses are already
+        # present, this was never a batch_start; re-extract chain/amount
+        # (batch_start intents leave those empty by design) and reroute to
+        # the normal multi-address send path instead of opening a batch
+        # that then has nowhere for those addresses to go.
+        if _ETH_ADDRESS_RE.search(text):
+            if not (intent.get("send_chain") or "").strip() or not (intent.get("send_amount") or "").strip():
+                reextracted = await self.llm.complete_json(
+                    SEND_NATIVE_REEXTRACTION_PROMPT, text, task_type=TaskType.FAST_RESPONSE
+                )
+                intent = {
+                    **intent,
+                    "send_chain": reextracted.get("chain") or intent.get("send_chain") or "",
+                    "send_amount": reextracted.get("amount") or intent.get("send_amount") or "",
+                }
+            return await self._handle_send_native(intent, text)
 
         try:
             count = int(intent.get("tx_count") or 0)
