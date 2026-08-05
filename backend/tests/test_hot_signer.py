@@ -118,6 +118,141 @@ async def test_send_native_success(monkeypatch):
 
 
 # ---------------------------------------------------------------------- #
+# Batch sends (1->many / many->1 / many->many)
+# ---------------------------------------------------------------------- #
+
+SECOND_PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690"
+SECOND_ADDRESS = Account.from_key(SECOND_PRIVATE_KEY).address
+
+
+def _fake_rpc_call_factory():
+    """Fake _rpc_call answering nonce/gasPrice/estimateGas/send generically,
+    tracking nonces per from-address so sequential legs from the same
+    sender see incrementing nonces like a real 'pending' RPC would."""
+    nonces: dict[str, int] = {}
+
+    async def fake_rpc_call(rpc_candidates, method, params):
+        if method == "eth_getTransactionCount":
+            addr = params[0]
+            n = nonces.get(addr, 0)
+            nonces[addr] = n + 1
+            return hex(n)
+        if method == "eth_gasPrice":
+            return "0x3b9aca00"
+        if method == "eth_estimateGas":
+            return "0x5208"
+        if method == "eth_sendRawTransaction":
+            return "0xdeadbeef"
+        raise AssertionError(f"unexpected method {method}")
+
+    return fake_rpc_call
+
+
+@pytest.mark.asyncio
+async def test_send_native_batch_one_to_many(monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", True)
+    monkeypatch.setattr(settings, "hot_signer_keys", {TEST_ADDRESS: TEST_PRIVATE_KEY})
+    monkeypatch.setattr(HotSigner, "_rpc_call", staticmethod(_fake_rpc_call_factory()))
+
+    signer = HotSigner(wallet_registry=None)
+    to_addrs = ["0x" + "2" * 40, "0x" + "3" * 40, "0x" + "4" * 40]
+    result = await signer.send_native_batch("base", [TEST_ADDRESS], to_addrs, 0.000001)
+
+    assert result.chain == "base"
+    assert result.succeeded == 3
+    assert result.failed == 0
+    assert [leg.to_address for leg in result.legs] == to_addrs
+    assert all(leg.from_address == TEST_ADDRESS for leg in result.legs)
+    assert all(leg.tx_hash == "0xdeadbeef" for leg in result.legs)
+
+
+@pytest.mark.asyncio
+async def test_send_native_batch_many_to_one(monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", True)
+    monkeypatch.setattr(
+        settings, "hot_signer_keys", {TEST_ADDRESS: TEST_PRIVATE_KEY, SECOND_ADDRESS: SECOND_PRIVATE_KEY}
+    )
+    monkeypatch.setattr(HotSigner, "_rpc_call", staticmethod(_fake_rpc_call_factory()))
+
+    signer = HotSigner(wallet_registry=None)
+    to_addr = "0x" + "9" * 40
+    result = await signer.send_native_batch("base", [TEST_ADDRESS, SECOND_ADDRESS], [to_addr], 0.000001)
+
+    assert result.succeeded == 2
+    assert result.failed == 0
+    assert [leg.from_address for leg in result.legs] == [TEST_ADDRESS, SECOND_ADDRESS]
+    assert all(leg.to_address == to_addr for leg in result.legs)
+
+
+@pytest.mark.asyncio
+async def test_send_native_batch_many_to_many_paired(monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", True)
+    monkeypatch.setattr(
+        settings, "hot_signer_keys", {TEST_ADDRESS: TEST_PRIVATE_KEY, SECOND_ADDRESS: SECOND_PRIVATE_KEY}
+    )
+    monkeypatch.setattr(HotSigner, "_rpc_call", staticmethod(_fake_rpc_call_factory()))
+
+    signer = HotSigner(wallet_registry=None)
+    to_addrs = ["0x" + "9" * 40, "0x" + "8" * 40]
+    result = await signer.send_native_batch("base", [TEST_ADDRESS, SECOND_ADDRESS], to_addrs, 0.000001)
+
+    assert result.succeeded == 2
+    assert [(leg.from_address, leg.to_address) for leg in result.legs] == [
+        (TEST_ADDRESS, to_addrs[0]),
+        (SECOND_ADDRESS, to_addrs[1]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_native_batch_mismatched_counts_raises(monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", True)
+    monkeypatch.setattr(
+        settings, "hot_signer_keys",
+        {TEST_ADDRESS: TEST_PRIVATE_KEY, SECOND_ADDRESS: SECOND_PRIVATE_KEY},
+    )
+    signer = HotSigner(wallet_registry=None)
+    to_addrs = ["0x" + "9" * 40, "0x" + "8" * 40, "0x" + "7" * 40]
+
+    with pytest.raises(HotSignerError, match="Can't match"):
+        await signer.send_native_batch("base", [TEST_ADDRESS, SECOND_ADDRESS], to_addrs, 0.000001)
+
+
+@pytest.mark.asyncio
+async def test_send_native_batch_one_bad_leg_does_not_stop_others(monkeypatch):
+    monkeypatch.setattr(settings, "hot_signer_enabled", True)
+    monkeypatch.setattr(settings, "hot_signer_keys", {TEST_ADDRESS: TEST_PRIVATE_KEY})
+
+    call_count = {"n": 0}
+
+    async def flaky_rpc_call(rpc_candidates, method, params):
+        if method == "eth_getTransactionCount":
+            return hex(call_count["n"])
+        if method == "eth_gasPrice":
+            return "0x3b9aca00"
+        if method == "eth_estimateGas":
+            return "0x5208"
+        if method == "eth_sendRawTransaction":
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise HotSignerError("RPC error on eth_sendRawTransaction: boom")
+            return "0xdeadbeef"
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(HotSigner, "_rpc_call", staticmethod(flaky_rpc_call))
+
+    signer = HotSigner(wallet_registry=None)
+    to_addrs = ["0x" + "2" * 40, "0x" + "3" * 40, "0x" + "4" * 40]
+    result = await signer.send_native_batch("base", [TEST_ADDRESS], to_addrs, 0.000001)
+
+    assert result.succeeded == 2
+    assert result.failed == 1
+    assert result.legs[1].ok is False
+    assert "boom" in result.legs[1].error
+    assert result.legs[0].ok is True
+    assert result.legs[2].ok is True
+
+
+# ---------------------------------------------------------------------- #
 # persist_hot_signer_secret
 # ---------------------------------------------------------------------- #
 

@@ -4,6 +4,56 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Hot signer: batch wallet sends (1->many / many->1 / many->many)
+
+Chat could only send native/token transfers 1 wallet -> 1 address at a time. Added
+batch support so one chat message can fan a single wallet's send out to many
+recipients, collect many wallets into a single recipient, or pair many wallets to
+many recipients in order -- all via the same hot-signer no-approval-popup path.
+Also swapped Ankr out of every chain's RPC fallback list (public tier now requires
+an API key -- was a guaranteed 401 on every attempt), stopped burning through the
+rest of a chain's RPC fallback list once a candidate reports a deterministic
+on-chain error (insufficient funds, nonce too low, etc. -- retrying elsewhere can't
+fix those), added a clean "have X need Y" message for insufficient-funds failures,
+added Alchemy as the primary RPC for all 6 chains (falls back to the existing public
+RPCs when `ALCHEMY_API_KEY` is unset), added a +5% margin to gas limit and gas price
+on every hot-signer tx, and made the native-transfer gas limit dynamic
+(`eth_estimateGas`) instead of a hardcoded 21000.
+
+### Added
+- `backend/wallet/hot_signer.py` — `BatchLegResult` / `BatchTransferResult`
+  dataclasses; `_pair_addresses()` (1->N, N->1, 1->1, N->N-paired matching, raises
+  on any other shape); `HotSigner.send_native_batch()` /
+  `HotSigner.send_token_batch()`, sequential per-leg sends where one failing leg
+  doesn't stop the rest.
+- `backend/wallet/hot_signer.py` — `_estimate_native_gas_with_fallback()` (dynamic
+  `eth_estimateGas` for plain value transfers, floored at the 21000 protocol
+  minimum); `GAS_BUMP_PCT` / `_bump()` (+5% on gas limit and gas price for every
+  send); `_friendly_insufficient_funds_message()` (wei -> native-unit have/need
+  message).
+- `backend/wallet/chain_resolver.py` — `_is_deterministic_chain_error()`: stops the
+  RPC fallback loop immediately on an on-chain-state error instead of trying (and
+  obscuring the real cause behind) the remaining candidates.
+- `backend/config/settings.py` — `alchemy_api_key` / `_alchemy_or()`: primary RPC
+  per chain becomes an Alchemy URL when the key is set, else falls back to the
+  existing public default.
+- `backend/planner/chat_engine.py` — `_extract_addresses()` / \
+  `_extract_from_wallet_labels()` / `_resolve_batch_endpoints()` /
+  `_format_batch_reply()`: deterministic (regex, not LLM) parsing of every 0x
+  address and named hot-signer wallet label in the raw message, feeding
+  `_handle_send_native` / `_handle_send_token`'s new batch path.
+- `backend/tests/test_hot_signer.py` — batch pairing shapes (1->many, many->1,
+  many->many paired, mismatched-count error, one bad leg doesn't stop the batch).
+- `backend/tests/test_chat_engine_batch_send.py` — address/label extraction from
+  raw chat text (numbered lists, dedup, word-boundary label matching).
+
+### Changed
+- `backend/config/settings.py` — dropped `rpc.ankr.com` from every chain's
+  fallback list.
+- `backend/wallet/hot_signer.py` — `send_native` uses the new dynamic gas estimate
+  instead of a hardcoded `21000` literal; both `send_native` and `send_token` apply
+  the +5% gas-limit/gas-price bump.
+
 ## [Unreleased] - Wallet Network field: "All EVM chains" option
 
 The Import Wallet dialog's Network dropdown only listed 6 explicit chains. Since

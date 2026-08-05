@@ -90,6 +90,55 @@ class TokenTransferResult:
     decimals: int
 
 
+@dataclass
+class BatchLegResult:
+    """Outcome of one from/to pair within a batch send."""
+    from_address: str
+    to_address: str
+    ok: bool
+    tx_hash: Optional[str] = None
+    error: Optional[str] = None
+
+
+@dataclass
+class BatchTransferResult:
+    chain: str
+    legs: list[BatchLegResult]
+
+    @property
+    def succeeded(self) -> int:
+        return sum(1 for leg in self.legs if leg.ok)
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for leg in self.legs if not leg.ok)
+
+
+def _pair_addresses(from_addresses: list[str], to_addresses: list[str]) -> list[tuple[str, str]]:
+    """
+    Turn a from-list and to-list into (from, to) pairs, covering all four
+    shapes the hot signer's batch sends support:
+      - 1 from  , 1 to   -> single pair (ordinary send)
+      - 1 from  , N to   -> broadcast: that one wallet pays out to every to-address
+      - N from  , 1 to   -> collect: every from-wallet sends to that one to-address
+      - N from  , N to   -> paired in order (from[i] -> to[i]); counts must match
+    Raises HotSignerError for any other shape (e.g. 3 from vs 5 to), since
+    there's no unambiguous way to match them.
+    """
+    if not from_addresses or not to_addresses:
+        raise HotSignerError("Need at least one sender and one recipient address for a batch send.")
+    if len(from_addresses) == 1:
+        return [(from_addresses[0], to) for to in to_addresses]
+    if len(to_addresses) == 1:
+        return [(frm, to_addresses[0]) for frm in from_addresses]
+    if len(from_addresses) == len(to_addresses):
+        return list(zip(from_addresses, to_addresses))
+    raise HotSignerError(
+        f"Can't match {len(from_addresses)} sender(s) to {len(to_addresses)} recipient(s) -- "
+        "use one sender, one recipient, or equal counts of each (paired in the order given)."
+    )
+
+
 # --- Minimal ERC20 ABI encoding, no web3.py Contract dependency needed --- #
 _ERC20_TRANSFER_SELECTOR = "a9059cbb"    # transfer(address,uint256)
 _ERC20_DECIMALS_SELECTOR = "313ce567"    # decimals()
@@ -622,6 +671,65 @@ class HotSigner:
             amount_native=amount_native,
             amount_wei=amount_wei,
         )
+
+    async def send_native_batch(
+        self,
+        chain_key: str,
+        from_addresses: list[str],
+        to_addresses: list[str],
+        amount_native: float,
+        wallet_id: Optional[str] = None,
+    ) -> BatchTransferResult:
+        """
+        Send `amount_native` across multiple (from, to) pairs -- see
+        _pair_addresses() for the four shapes supported (1->N, N->1, 1->1,
+        N->N paired). Legs run sequentially (never concurrently: two sends
+        from the same from-address at once would race on the same nonce),
+        and one leg failing does not stop the rest -- every pair gets a
+        BatchLegResult either way.
+        """
+        pairs = _pair_addresses(from_addresses, to_addresses)
+        legs: list[BatchLegResult] = []
+        for from_addr, to_addr in pairs:
+            try:
+                result = await self.send_native(
+                    chain_key, to_addr, amount_native, wallet_id=wallet_id, from_address=from_addr,
+                )
+                legs.append(BatchLegResult(from_addr, to_addr, ok=True, tx_hash=result.tx_hash))
+            except HotSignerError as exc:
+                legs.append(BatchLegResult(from_addr, to_addr, ok=False, error=str(exc)))
+            except Exception as exc:  # noqa: BLE001 -- one bad leg must not kill the batch
+                logger.exception("Unexpected error on batch leg %s -> %s", from_addr, to_addr)
+                legs.append(BatchLegResult(from_addr, to_addr, ok=False, error=str(exc)))
+        return BatchTransferResult(chain=chain_key, legs=legs)
+
+    async def send_token_batch(
+        self,
+        chain_key: str,
+        token_address: str,
+        from_addresses: list[str],
+        to_addresses: list[str],
+        amount_tokens: float,
+        decimals: Optional[int] = None,
+        wallet_id: Optional[str] = None,
+    ) -> BatchTransferResult:
+        """ERC20 counterpart of send_native_batch -- same pairing rules, same
+        sequential/one-bad-leg-does-not-stop-the-rest behavior."""
+        pairs = _pair_addresses(from_addresses, to_addresses)
+        legs: list[BatchLegResult] = []
+        for from_addr, to_addr in pairs:
+            try:
+                result = await self.send_token(
+                    chain_key, token_address, to_addr, amount_tokens,
+                    decimals=decimals, wallet_id=wallet_id, from_address=from_addr,
+                )
+                legs.append(BatchLegResult(from_addr, to_addr, ok=True, tx_hash=result.tx_hash))
+            except HotSignerError as exc:
+                legs.append(BatchLegResult(from_addr, to_addr, ok=False, error=str(exc)))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Unexpected error on batch leg %s -> %s", from_addr, to_addr)
+                legs.append(BatchLegResult(from_addr, to_addr, ok=False, error=str(exc)))
+        return BatchTransferResult(chain=chain_key, legs=legs)
 
     async def send_token(
         self,

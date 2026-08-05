@@ -80,7 +80,13 @@ from backend.planner.model_manager import TaskType
 from backend.planner.model_manager import model_manager as _default_model_manager
 from backend.identity.manager import ProfileManager
 from backend.identity.pending_profile import PendingTask
-from backend.wallet.hot_signer import HotSignerDisabled, HotSignerError
+from backend.wallet.hot_signer import (
+    BatchTransferResult,
+    HotSignerDisabled,
+    HotSignerError,
+    get_hot_signer_address,
+    list_hot_signers,
+)
 
 logger = logging.getLogger("nexus.chat")
 
@@ -286,6 +292,12 @@ polygon" -> category=wallet wallet_action=send_token send_chain=<chain> send_tok
 send_to_address=0xabc... send_amount=<amount>. Only classify as send_token when a 0x contract address for \
 the token is given in the message -- if the user only names a token by symbol (e.g. "send 10 USDC") with \
 no contract address, do NOT set send_token_address to a guess; leave it empty so the app can ask for it.
+- "send 0.000001 eth to these 10 addresses: 0xabc..., 0xdef..., ..." / "wallet 1, wallet 2 theke 0xabc... e \
+0.01 pathao" / any send/transfer message naming more than one 0x... address, or naming more than one wallet \
+label as the sender -- still classify as category=wallet wallet_action=send_native (or send_token, same \
+rule) with send_chain and send_amount set as usual. Set send_to_address to just the first address you see; \
+the app re-scans the raw message itself for every address/wallet-label and handles 1->many, many->1, and \
+many->many sends on its own -- you only need chain/amount right, not the full address list.
 - "retry task <id>" / "retry that task" -> category=agent_command action=retry_task task_id=<id if given>
 - "delete task <id>" / "remove task <id> from the list" -> category=agent_command action=delete_task \
 task_id=<id>
@@ -349,6 +361,43 @@ import re as _re
 
 _PRIVATE_KEY_RE = _re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
 _SEED_WORD_COUNTS = (12, 15, 18, 21, 24)
+
+# Batch wallet sends (see ChatEngine._handle_send_native / _handle_send_token):
+# any 0x + 40 hex chars in the raw message is a candidate destination
+# address, matched deterministically -- not left to the LLM classifier,
+# since addresses are an unambiguous pattern and money is on the line.
+_ETH_ADDRESS_RE = _re.compile(r"0x[0-9a-fA-F]{40}")
+
+
+def _extract_addresses(text: str) -> list[str]:
+    """All distinct 0x addresses in `text`, in first-seen order."""
+    seen: list[str] = []
+    for match in _ETH_ADDRESS_RE.findall(text):
+        if match not in seen:
+            seen.append(match)
+    return seen
+
+
+def _extract_from_wallet_labels(text: str, hot_signers: list[dict]) -> list[str]:
+    """
+    Which loaded hot-signer addresses are named as SENDERS in `text` (e.g.
+    "wallet 1, wallet 2 theke ..." / "from wallet 1 and wallet 2"). Matches
+    each hot signer's label (case-insensitive, word-boundary) against the
+    raw message; only meaningful with 2+ hits since a single mention is
+    already handled by the ordinary single-sender path. Returns addresses
+    in the order their labels first appear in the text.
+    """
+    hits: list[tuple[int, str]] = []
+    lowered = text.lower()
+    for signer in hot_signers:
+        label = (signer.get("label") or "").strip()
+        if not label:
+            continue
+        match = _re.search(r"\b" + _re.escape(label.lower()) + r"\b", lowered)
+        if match:
+            hits.append((match.start(), signer["address"]))
+    hits.sort(key=lambda h: h[0])
+    return [addr for _, addr in hits]
 
 
 def _looks_like_wallet_secret(text: str) -> Optional[str]:
@@ -587,7 +636,7 @@ class ChatEngine:
             elif category == "mcp":
                 reply, meta = await self._handle_mcp_command(intent, text)
             elif category == "wallet":
-                reply, meta = await self._handle_wallet_command(session, intent)
+                reply, meta = await self._handle_wallet_command(session, intent, text)
             elif category == "profile":
                 reply, meta = await self._handle_profile_command(intent)
             elif category == "memory":
@@ -1025,7 +1074,7 @@ class ChatEngine:
     # backend/wallet/tx_batch.py's module docstring for why that stays
     # Settings-only. Whether each queued task still needs a human click at
     # the wallet-extension popup is unchanged by any of this.
-    async def _handle_wallet_command(self, session: ChatSession, intent: dict) -> tuple[str, dict]:
+    async def _handle_wallet_command(self, session: ChatSession, intent: dict, text: str = "") -> tuple[str, dict]:
         action = (intent.get("wallet_action") or intent.get("action") or "").strip().lower()
 
         # --- Wallet CRUD (registry-backed, not batch-related) -- reuses ---
@@ -1036,10 +1085,10 @@ class ChatEngine:
             return await self._handle_wallet_crud(session, action, intent)
 
         if action == "send_native":
-            return await self._handle_send_native(intent)
+            return await self._handle_send_native(intent, text)
 
         if action == "send_token":
-            return await self._handle_send_token(intent)
+            return await self._handle_send_token(intent, text)
 
         tx_batch = getattr(self.app_state, "tx_batch", None) if self.app_state else None
         if tx_batch is None:
@@ -1070,27 +1119,96 @@ class ChatEngine:
             {"tx_count": count, "wallet_label": wallet_label},
         )
 
-    async def _handle_send_native(self, intent: dict) -> tuple[str, dict]:
+    def _resolve_batch_endpoints(self, text: str, intent_to_address: str) -> tuple[list[str], list[str]]:
+        """
+        Figure out the from-address(es) and to-address(es) for a send,
+        deterministically from the raw message (not the LLM classifier --
+        addresses are an unambiguous pattern):
+          - to-addresses: every distinct 0x... address in the raw text; if
+            none appear verbatim (e.g. carried over from context), falls
+            back to the single address the intent classifier extracted.
+          - from-addresses: loaded hot-signer wallets whose label is named
+            in the text (e.g. "wallet 1, wallet 2 theke ..."). Falls back
+            to the current default hot signer when no label is named -- a
+            plain single-sender send, same as before batch support existed.
+        Both lists come back de-duplicated and in the order they're
+        mentioned; a caller with <=1 of each just does an ordinary single
+        send, so this is safe to call unconditionally.
+        """
+        to_addresses = _extract_addresses(text)
+        if not to_addresses and intent_to_address:
+            to_addresses = [intent_to_address]
+
+        hot_signers = list_hot_signers()
+        from_addresses = _extract_from_wallet_labels(text, hot_signers)
+        if not from_addresses:
+            default_addr = get_hot_signer_address()
+            from_addresses = [default_addr] if default_addr else []
+
+        # A to-address that's also one of our own sender wallets isn't a
+        # real recipient (e.g. its address happened to get echoed back in
+        # the message) -- drop it so it doesn't turn an intended 1->N send
+        # into an accidental N<->N.
+        from_set = {a.lower() for a in from_addresses}
+        to_addresses = [a for a in to_addresses if a.lower() not in from_set]
+
+        return from_addresses, to_addresses
+
+    @staticmethod
+    def _short_addr(address: str) -> str:
+        return address if len(address) <= 12 else f"{address[:6]}…{address[-4:]}"
+
+    def _format_batch_reply(self, result: BatchTransferResult) -> tuple[str, dict]:
+        lines = []
+        for i, leg in enumerate(result.legs, 1):
+            frm, to = self._short_addr(leg.from_address), self._short_addr(leg.to_address)
+            if leg.ok:
+                lines.append(f"{i}. {frm} -> {to}: sent, tx {leg.tx_hash}")
+            else:
+                lines.append(f"{i}. {frm} -> {to}: FAILED -- {leg.error}")
+
+        max_shown = 15
+        shown = lines[:max_shown]
+        if len(lines) > max_shown:
+            shown.append(f"... and {len(lines) - max_shown} more")
+
+        header = f"Batch send on {result.chain}: {result.succeeded} succeeded, {result.failed} failed."
+        reply = header + "\n" + "\n".join(shown)
+        meta = {
+            "chain": result.chain,
+            "succeeded": result.succeeded,
+            "failed": result.failed,
+            "legs": [
+                {"from": leg.from_address, "to": leg.to_address, "ok": leg.ok, "tx_hash": leg.tx_hash, "error": leg.error}
+                for leg in result.legs
+            ],
+        }
+        return reply, meta
+
+    async def _handle_send_native(self, intent: dict, text: str = "") -> tuple[str, dict]:
         """
         Direct RPC native-token transfer via backend.wallet.hot_signer.HotSigner
         -- a deliberately separate path from the browser-extension approval
         flow the rest of this file uses (see hot_signer.py's module
         docstring). No popup, no human-in-the-loop; only the hot signer's
         own enable flag / per-tx cap gate it.
+
+        Supports 1->1 (ordinary), 1->many, many->1, and many->many (paired)
+        sends -- see _resolve_batch_endpoints / hot_signer._pair_addresses.
         """
         hot_signer = getattr(self.app_state, "hot_signer", None) if self.app_state else None
         if hot_signer is None:
             return "Hot signer isn't wired up in this deployment.", {}
 
         chain = (intent.get("send_chain") or "").strip().lower()
-        to_address = (intent.get("send_to_address") or "").strip()
         amount_raw = (intent.get("send_amount") or "").strip()
+        from_addresses, to_addresses = self._resolve_batch_endpoints(text, (intent.get("send_to_address") or "").strip())
 
-        if not chain or not to_address or not amount_raw:
+        if not chain or not to_addresses or not amount_raw:
             missing = []
             if not chain:
                 missing.append("chain")
-            if not to_address:
+            if not to_addresses:
                 missing.append("destination address")
             if not amount_raw:
                 missing.append("amount")
@@ -1101,24 +1219,35 @@ class ChatEngine:
         except ValueError:
             return f"'{amount_raw}' isn't a valid amount.", {}
 
+        if len(from_addresses) <= 1 and len(to_addresses) <= 1:
+            to_address = to_addresses[0]
+            from_address = from_addresses[0] if from_addresses else None
+            try:
+                result = await hot_signer.send_native(chain, to_address, amount, from_address=from_address)
+            except HotSignerDisabled as exc:
+                return str(exc), {}
+            except HotSignerError as exc:
+                return f"Send failed: {exc}", {}
+            return (
+                f"Sent {result.amount_native} native token on {result.chain} to {result.to_address}. "
+                f"tx: {result.tx_hash}",
+                {"tx_hash": result.tx_hash, "chain": result.chain, "to": result.to_address, "amount": result.amount_native},
+            )
+
         try:
-            result = await hot_signer.send_native(chain, to_address, amount)
+            batch_result = await hot_signer.send_native_batch(chain, from_addresses, to_addresses, amount)
         except HotSignerDisabled as exc:
             return str(exc), {}
         except HotSignerError as exc:
-            return f"Send failed: {exc}", {}
+            return f"Batch send failed: {exc}", {}
+        return self._format_batch_reply(batch_result)
 
-        return (
-            f"Sent {result.amount_native} native token on {result.chain} to {result.to_address}. "
-            f"tx: {result.tx_hash}",
-            {"tx_hash": result.tx_hash, "chain": result.chain, "to": result.to_address, "amount": result.amount_native},
-        )
-
-    async def _handle_send_token(self, intent: dict) -> tuple[str, dict]:
+    async def _handle_send_token(self, intent: dict, text: str = "") -> tuple[str, dict]:
         """
         Direct RPC ERC20 transfer via backend.wallet.hot_signer.HotSigner --
         same no-approval-popup path as _handle_send_native, just calling
-        transfer(address,uint256) on the token contract.
+        transfer(address,uint256) on the token contract. Same 1->1/1->many/
+        many->1/many->many support as _handle_send_native.
         """
         hot_signer = getattr(self.app_state, "hot_signer", None) if self.app_state else None
         if hot_signer is None:
@@ -1126,16 +1255,19 @@ class ChatEngine:
 
         chain = (intent.get("send_chain") or "").strip().lower()
         token_address = (intent.get("send_token_address") or "").strip()
-        to_address = (intent.get("send_to_address") or "").strip()
         amount_raw = (intent.get("send_amount") or "").strip()
+        from_addresses, to_addresses = self._resolve_batch_endpoints(text, (intent.get("send_to_address") or "").strip())
+        # The token contract address is also a 0x... match -- it's never a
+        # recipient, so make sure it didn't leak into to_addresses.
+        to_addresses = [a for a in to_addresses if a.lower() != token_address.lower()]
 
-        if not chain or not token_address or not to_address or not amount_raw:
+        if not chain or not token_address or not to_addresses or not amount_raw:
             missing = []
             if not chain:
                 missing.append("chain")
             if not token_address:
                 missing.append("token contract address")
-            if not to_address:
+            if not to_addresses:
                 missing.append("destination address")
             if not amount_raw:
                 missing.append("amount")
@@ -1151,24 +1283,34 @@ class ChatEngine:
         except ValueError:
             return f"'{amount_raw}' isn't a valid amount.", {}
 
+        if len(from_addresses) <= 1 and len(to_addresses) <= 1:
+            to_address = to_addresses[0]
+            from_address = from_addresses[0] if from_addresses else None
+            try:
+                result = await hot_signer.send_token(chain, token_address, to_address, amount, from_address=from_address)
+            except HotSignerDisabled as exc:
+                return str(exc), {}
+            except HotSignerError as exc:
+                return f"Send failed: {exc}", {}
+            return (
+                f"Sent {result.amount_tokens} of token {result.token_address} on {result.chain} to "
+                f"{result.to_address}. tx: {result.tx_hash}",
+                {
+                    "tx_hash": result.tx_hash,
+                    "chain": result.chain,
+                    "token_address": result.token_address,
+                    "to": result.to_address,
+                    "amount": result.amount_tokens,
+                },
+            )
+
         try:
-            result = await hot_signer.send_token(chain, token_address, to_address, amount)
+            batch_result = await hot_signer.send_token_batch(chain, token_address, from_addresses, to_addresses, amount)
         except HotSignerDisabled as exc:
             return str(exc), {}
         except HotSignerError as exc:
-            return f"Send failed: {exc}", {}
-
-        return (
-            f"Sent {result.amount_tokens} of token {result.token_address} on {result.chain} to "
-            f"{result.to_address}. tx: {result.tx_hash}",
-            {
-                "tx_hash": result.tx_hash,
-                "chain": result.chain,
-                "token_address": result.token_address,
-                "to": result.to_address,
-                "amount": result.amount_tokens,
-            },
-        )
+            return f"Batch send failed: {exc}", {}
+        return self._format_batch_reply(batch_result)
 
     async def _handle_batch_turn(self, session: ChatSession, tx_batch: Any, text: str) -> tuple[str, dict]:
         """One turn of an active transaction batch (backend.wallet.
