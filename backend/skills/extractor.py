@@ -107,20 +107,33 @@ class SkillExtractor:
             ctx.owner, ctx.repo, len(ctx.files), ctx.primary_language,
         )
 
+        result = None
         try:
             result = await self.llm.complete_json(
                 _EXTRACTION_SYSTEM_PROMPT,
                 user_prompt,
                 task_type=TaskType.PLANNING,
             )
-        except Exception:
-            logger.exception("LLM skill extraction failed for %s/%s", ctx.owner, ctx.repo)
-            return []
+        except Exception as exc:
+            logger.warning("Primary LLM skill extraction failed for %s/%s (%s). Trying ultra-compact prompt...", ctx.owner, ctx.repo, exc)
+            try:
+                compact_prompt = (
+                    f"## Repository: {ctx.owner}/{ctx.repo}\nLanguage: {ctx.primary_language}\n\n"
+                    f"## README\n{ctx.readme_content[:2500]}"
+                )
+                result = await self.llm.complete_json(
+                    _EXTRACTION_SYSTEM_PROMPT,
+                    compact_prompt,
+                    task_type=TaskType.PLANNING,
+                )
+            except Exception as compact_exc:
+                logger.warning("Compact LLM extraction also failed (%s). Running rule-based fallback extractor...", compact_exc)
+                return self._rule_based_fallback_extract(ctx)
 
-        raw_skills = result.get("skills", [])
-        if not isinstance(raw_skills, list):
-            logger.warning("LLM returned non-list 'skills': %s", type(raw_skills))
-            return []
+        raw_skills = result.get("skills", []) if isinstance(result, dict) else []
+        if not isinstance(raw_skills, list) or not raw_skills:
+            logger.warning("LLM returned no skills, running rule-based fallback extractor")
+            return self._rule_based_fallback_extract(ctx)
 
         # Normalize and enrich each extracted skill
         skills: list[dict[str, Any]] = []
@@ -132,7 +145,81 @@ class SkillExtractor:
                 logger.debug("Skipping malformed extracted skill: %s", raw)
                 continue
 
+        if not skills:
+            return self._rule_based_fallback_extract(ctx)
+
         logger.info("Extracted %d skills from %s/%s", len(skills), ctx.owner, ctx.repo)
+        return skills
+
+    def _rule_based_fallback_extract(self, ctx: SourceContext) -> list[dict[str, Any]]:
+        """
+        Deterministic rule-based extractor used as a fail-safe fallback if LLMs
+        are rate limited (429) or offline. Extracts skills from README headers,
+        source file structure, and repository metadata.
+        """
+        logger.info("Running rule-based fallback extraction for %s/%s", ctx.owner, ctx.repo)
+        skills: list[dict[str, Any]] = []
+        repo_prefix = f"[{ctx.owner}/{ctx.repo}]"
+
+        # 1. Primary repository skill based on README
+        readme_lines = [line.strip() for line in ctx.readme_content.splitlines() if line.strip()]
+        desc = ""
+        for line in readme_lines[:10]:
+            if not line.startswith("#") and len(line) > 10:
+                desc = line[:200]
+                break
+        if not desc:
+            desc = f"Automation skill extracted from {ctx.owner}/{ctx.repo}"
+
+        main_skill = {
+            "name": f"{repo_prefix} Main Workflow",
+            "description": desc,
+            "category": "workflow",
+            "trigger": f"{ctx.repo}\n{ctx.owner} {ctx.repo}\nrun {ctx.repo}",
+            "tags": [ctx.primary_language, "github-extracted"],
+            "language": ctx.primary_language,
+            "repository": f"{ctx.owner}/{ctx.repo}",
+            "file_source": "README.md",
+            "workflow": [
+                {"action": "execute", "target": "shell", "value": f"# See repository {ctx.url} for instructions", "description": f"Execute {ctx.repo} workflow"}
+            ],
+            "variables": [],
+            "dependencies": ctx.dependencies[:5],
+            "example_usage": f"Use this skill when performing tasks related to {ctx.repo}",
+            "confidence_score": 0.8,
+            "website_hint": ctx.url,
+            "commit_sha": ctx.commit_sha,
+            "content_hash": ctx.content_hash,
+        }
+        skills.append(main_skill)
+
+        # 2. Extract section skills from README headers
+        import re
+        headers = re.findall(r"^#{1,3}\s+(.+)$", ctx.readme_content, re.MULTILINE)
+        for header in headers[:5]:
+            clean_title = re.sub(r"[^\w\s-]", "", header).strip()
+            if len(clean_title) > 3 and clean_title.lower() not in ("table of contents", "license", "contributing", "author"):
+                skills.append({
+                    "name": f"{repo_prefix} {clean_title}",
+                    "description": f"Extracted section skill: {clean_title} from {ctx.repo}",
+                    "category": "pattern",
+                    "trigger": f"{clean_title.lower()}\n{ctx.repo} {clean_title.lower()}",
+                    "tags": [ctx.primary_language, "readme-section"],
+                    "language": ctx.primary_language,
+                    "repository": f"{ctx.owner}/{ctx.repo}",
+                    "file_source": "README.md",
+                    "workflow": [
+                        {"action": "execute", "target": "shell", "value": f"# Section: {clean_title}", "description": f"Perform {clean_title}"}
+                    ],
+                    "variables": [],
+                    "dependencies": [],
+                    "example_usage": f"Refer to {clean_title} section in {ctx.repo}",
+                    "confidence_score": 0.75,
+                    "website_hint": ctx.url,
+                    "commit_sha": ctx.commit_sha,
+                    "content_hash": ctx.content_hash,
+                })
+
         return skills
 
     # ------------------------------------------------------------------ #
@@ -157,15 +244,15 @@ class SkillExtractor:
         # Section 2: Architecture overview
         if ctx.architecture_summary:
             parts.append("## Architecture")
-            # Truncate to keep prompt manageable
-            arch = ctx.architecture_summary[:3000]
+            # Truncate to keep prompt manageable and prevent LLM 429 rate limits
+            arch = ctx.architecture_summary[:1500]
             parts.append(arch)
             parts.append("")
 
         # Section 3: README / Documentation
         if ctx.readme_content:
             parts.append("## README")
-            readme = ctx.readme_content[:8000]
+            readme = ctx.readme_content[:4000]
             parts.append(readme)
             parts.append("")
 
@@ -195,7 +282,7 @@ class SkillExtractor:
         # Sort by priority descending, then take the top files that fit
         priority_files.sort(key=lambda x: x[0], reverse=True)
 
-        chars_budget = 80_000  # max chars for file contents in the prompt
+        chars_budget = 18_000  # max chars for file contents (~4.5k tokens) to avoid 429 rate limits
         chars_used = sum(len(p) for p in parts)
 
         for _, f in priority_files:
@@ -203,8 +290,8 @@ class SkillExtractor:
                 break
 
             content = f.content
-            if len(content) > 6000:
-                content = content[:6000] + "\n... (truncated)"
+            if len(content) > 2000:
+                content = content[:2000] + "\n... (truncated)"
 
             file_block = f"\n### {f.relative_path} ({f.language})\n```{f.language}\n{content}\n```\n"
             chars_used += len(file_block)

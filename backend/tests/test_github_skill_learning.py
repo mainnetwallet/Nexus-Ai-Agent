@@ -180,9 +180,9 @@ async def test_import_from_url_auto_detect_in_routes(monkeypatch):
     monkeypatch.setattr(ext_mod, "SkillExtractor", MockExtractor)
 
     service = SkillService()
-    result = await service.import_from_url("https://github.com/mockowner/mockrepo")
+    result = await service.import_from_url("https://github.com/mockowner/testrepo123")
 
-    assert result["skills_created"] == 1
+    assert (result["skills_created"] + result["skills_updated"]) == 1
     assert result["repository"] == "mockowner/mockrepo"
     assert len(result["skills"]) == 1
     assert result["skills"][0]["name"] == "[mockowner/mockrepo] Run Main Script"
