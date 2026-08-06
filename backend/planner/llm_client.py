@@ -156,6 +156,29 @@ def _clear_sticky_fallback(provider: "LLMProvider") -> None:
     _sticky_fallback_model.pop(provider, None)
 
 
+_UNKNOWN_MODEL_ERROR_MARKERS = (
+    "model not found",
+    "does not exist",
+    "not a valid model",
+    "invalid model",
+    "unknown model",
+    "no such model",
+    "not supported for",
+    "unsupported model",
+)
+
+
+def _looks_like_unknown_model_error(response_text: str) -> bool:
+    """Whether a 400/404 body reads like 'this model name is wrong', as
+    opposed to any other bad-request (malformed payload, content policy
+    block, invalid parameter, etc.). Only errors that actually look
+    model-related should trigger the default-model retry -- otherwise a
+    routine bad-request gets silently retried against a different model
+    and its real cause never surfaces to the caller."""
+    lowered = (response_text or "").lower()
+    return "model" in lowered and any(marker in lowered for marker in _UNKNOWN_MODEL_ERROR_MARKERS)
+
+
 def _image_to_data_url(image_path: str) -> tuple[str, str]:
     """Returns (base64_data, mime_type) for a local image file."""
     mime_type = mimetypes.guess_type(image_path)[0] or "image/png"
@@ -327,7 +350,11 @@ class LLMClient:
                         )
                     return text
                 except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code in (404, 400) and candidate_model != DEFAULT_MODELS.get(self.provider, ""):
+                    if (
+                        exc.response.status_code in (404, 400)
+                        and candidate_model != DEFAULT_MODELS.get(self.provider, "")
+                        and _looks_like_unknown_model_error(exc.response.text)
+                    ):
                         default_model = DEFAULT_MODELS.get(self.provider, "")
                         if default_model and candidate_model != default_model:
                             logger.warning(

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 from eth_account import Account
-from eth_account.hdaccount import Mnemonic
+from eth_account.hdaccount import Language, Mnemonic
 
 logger = logging.getLogger("nexus.wallet.import")
 
@@ -85,7 +85,7 @@ def derive_from_seed_phrase(mnemonic: str, derivation_path: str = DEFAULT_DERIVA
     """
     phrase = mnemonic.strip()
     try:
-        if not Mnemonic("english").is_mnemonic_valid(phrase):
+        if not Mnemonic(Language.ENGLISH).is_mnemonic_valid(phrase):
             raise WalletImportError("That does not look like a valid seed phrase.")
         account = Account.from_mnemonic(phrase, account_path=derivation_path)
         address = account.address

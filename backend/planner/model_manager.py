@@ -349,18 +349,19 @@ class ModelManager:
 
     def fallback_chain(self, primary: LLMProvider) -> list[LLMProvider]:
         """Ordered, de-duplicated list: primary, explicit fallback, priority list,
-        then any other available provider -- filtered to available ones."""
-        ordered = [primary, self.fallback_provider, *self.provider_priority, *list(LLMProvider)]
-        seen: set[LLMProvider] = set()
-        chain: list[LLMProvider] = []
-        for p in ordered:
+        then any other available provider. Primary is always included first
+        (even without a configured key) so callers can surface a clear
+        "primary provider unavailable" error instead of silently skipping it;
+        every provider after primary is filtered to available ones."""
+        chain: list[LLMProvider] = [primary]
+        seen: set[LLMProvider] = {primary}
+        rest = [self.fallback_provider, *self.provider_priority, *list(LLMProvider)]
+        for p in rest:
             if p in seen:
                 continue
             seen.add(p)
             if self.is_available(p):
                 chain.append(p)
-        if not chain:
-            chain.append(primary)
         return chain
 
     # ------------------------------------------------------------------ #

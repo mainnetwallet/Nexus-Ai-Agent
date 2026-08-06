@@ -182,8 +182,12 @@ class LiveSessionManager:
         try:
             frame_bytes = await page.screenshot(type="jpeg", quality=self._jpeg_quality, full_page=True)
         except Exception as exc:
-            # Common during navigation transitions -- not a real failure.
+            # Common during navigation transitions -- not a real failure,
+            # but still logged at debug level so a persistent misconfiguration
+            # (as opposed to a one-off transition) is visible in logs instead
+            # of silently starving clients of frames forever.
             self._last_error = str(exc)
+            logger.debug("Live session screenshot capture failed (%s)", exc)
             return
 
         self._last_error = None

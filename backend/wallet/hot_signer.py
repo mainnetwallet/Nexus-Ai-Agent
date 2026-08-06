@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 import httpx
 from eth_account import Account
-from eth_account.hdaccount import Mnemonic
+from eth_account.hdaccount import Language, Mnemonic
 
 from backend.config.settings import BASE_DIR, settings
 from backend.wallet.chain_resolver import get_rpc_candidates, resolve_chain, rpc_post_with_fallback
@@ -419,7 +419,7 @@ def persist_hot_signer_secret(
             account = Account.from_key(key_hex)
         else:
             phrase = (seed_phrase or "").strip()
-            if not Mnemonic("english").is_mnemonic_valid(phrase):
+            if not Mnemonic(Language.ENGLISH).is_mnemonic_valid(phrase):
                 raise HotSignerPersistError("That does not look like a valid seed phrase.")
             account = Account.from_mnemonic(phrase, account_path=derivation_path)
             key_hex = account.key.hex()

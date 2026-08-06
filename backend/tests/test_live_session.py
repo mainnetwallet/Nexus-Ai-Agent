@@ -13,7 +13,7 @@ class FakePage:
         self._raise_on_screenshot = raise_on_screenshot
         self.screenshot_calls = 0
 
-    async def screenshot(self, type="jpeg", quality=60):
+    async def screenshot(self, type="jpeg", quality=60, full_page=False, **kwargs):
         self.screenshot_calls += 1
         if self._raise_on_screenshot:
             raise RuntimeError("page is navigating")
