@@ -284,31 +284,44 @@ def test_persist_requires_exactly_one_secret(_isolated_keystore):
         )
 
 
-def test_persist_without_passphrase_auto_generates_local_passphrase(_isolated_keystore, monkeypatch, tmp_path):
+def test_persist_without_passphrase_refuses_instead_of_auto_generating(_isolated_keystore, monkeypatch, tmp_path):
     # No explicit passphrase and no KEYSTORE_PASSPHRASE env var -- this must
     # NOT block on stdin (the real caller is a request handler). Per
-    # keystore.get_passphrase_noninteractive(), it now falls back to a
-    # local auto-generated passphrase file instead of raising.
+    # keystore.get_passphrase_noninteractive(), it now fails closed with a
+    # clear KeystoreError instead of auto-generating a co-located passphrase
+    # file (a passphrase stored next to the keystore it unlocks protects
+    # nothing), and nothing is written to disk.
     monkeypatch.delenv("KEYSTORE_PASSPHRASE", raising=False)
     monkeypatch.setattr(settings, "hot_signer_keystore_passphrase", "")
 
     import backend.config.settings as settings_module
     monkeypatch.setattr(settings_module, "BASE_DIR", tmp_path)
 
-    address = persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY)
+    from backend.wallet.hot_signer import HotSignerPersistError
+    from backend.wallet.keystore import KeystoreError
 
-    assert address == TEST_ADDRESS
+    with pytest.raises(HotSignerPersistError) as excinfo:
+        persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY)
+
+    assert "KEYSTORE_PASSPHRASE" in str(excinfo.value)
     passphrase_file = tmp_path / ".keystore_passphrase"
-    assert passphrase_file.exists()
+    assert not passphrase_file.exists()
+    assert not _isolated_keystore.exists()
 
-    # And the key must actually be recoverable using that auto-generated
-    # passphrase, matching whatever the keystore file was encrypted with.
-    from backend.wallet.keystore import Keystore
+    # An explicit passphrase still works exactly as before.
+    address = persist_hot_signer_secret(private_key=TEST_PRIVATE_KEY, passphrase=TEST_PASSPHRASE)
+    assert address == TEST_ADDRESS
 
-    auto_passphrase = passphrase_file.read_text().strip()
-    ks = Keystore(_isolated_keystore)
-    entries = ks.load_keys(auto_passphrase)
-    assert entries[TEST_ADDRESS]["private_key"].lower() == TEST_PRIVATE_KEY.lower()
+
+def test_get_passphrase_noninteractive_requires_env_var(monkeypatch):
+    from backend.wallet.keystore import KeystoreError, get_passphrase_noninteractive
+
+    monkeypatch.delenv("KEYSTORE_PASSPHRASE", raising=False)
+    with pytest.raises(KeystoreError):
+        get_passphrase_noninteractive()
+
+    monkeypatch.setenv("KEYSTORE_PASSPHRASE", "explicit-passphrase")
+    assert get_passphrase_noninteractive() == "explicit-passphrase"
 
 
 def test_persist_from_private_key_encrypts_keystore_and_updates_settings(_isolated_keystore, monkeypatch):

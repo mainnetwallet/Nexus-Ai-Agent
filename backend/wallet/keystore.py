@@ -210,56 +210,22 @@ def get_passphrase_noninteractive() -> str:
     Resolves the keystore passphrase without ever prompting on stdin --
     safe to call from a request handler (REST route, chat engine turn).
 
-    Order:
-    1. KEYSTORE_PASSPHRASE env var, if set.
-    2. A local auto-generated passphrase file (BASE_DIR/.keystore_passphrase,
-       owner-only permissions, git-ignored). Created once, on first use, with
-       a random 32-byte token -- never hardcoded in source, never committed,
-       never logged. This exists so the hot signer works out of the box
-       without requiring a manual env var, while keeping the passphrase out
-       of the codebase (a passphrase baked into source code protects
-       nothing, since anyone with repo read access would have it too).
-
-    Use this from any code path that might run inside a request handler --
-    prompting on stdin from a server process either hangs the event loop
-    forever (no TTY) or, worse, blocks every other request behind it (if
-    there is one).
+    Only ever uses the KEYSTORE_PASSPHRASE env var. There is deliberately
+    NO auto-generated fallback file: a passphrase co-located on the same
+    disk as the keystore it unlocks protects nothing (any process that can
+    read the keystore can read the passphrase right next to it), so a
+    missing KEYSTORE_PASSPHRASE raises instead of silently degrading the
+    encryption to obfuscation. Callers should translate this into a clear
+    user-facing "set KEYSTORE_PASSPHRASE" error.
     """
     env_val = os.environ.get("KEYSTORE_PASSPHRASE")
     if env_val:
         return env_val
-    return _get_or_create_local_passphrase()
-
-
-def _get_or_create_local_passphrase() -> str:
-    """Reads BASE_DIR/.keystore_passphrase, creating it with a fresh random
-    passphrase (base64 of 32 os.urandom bytes) if it doesn't exist yet.
-    Owner-only file permissions where the OS supports it. This file is the
-    actual secret once KEYSTORE_PASSPHRASE isn't set -- treat it like the
-    keystore itself: back it up, never commit it (already git-ignored)."""
-    from backend.config.settings import BASE_DIR
-
-    path = BASE_DIR / ".keystore_passphrase"
-    if path.exists():
-        existing = path.read_text().strip()
-        if existing:
-            return existing
-
-    token = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(token)
-    try:
-        tmp_path.chmod(0o600)
-    except OSError:
-        pass
-    tmp_path.replace(path)
-    logger.info(
-        "Generated a new local keystore passphrase at %s (KEYSTORE_PASSPHRASE was unset). "
-        "Back this file up -- losing it makes the keystore unrecoverable.",
-        path,
+    raise KeystoreError(
+        "KEYSTORE_PASSPHRASE is not set in the environment. The hot-signer keystore "
+        "passphrase must be provided explicitly -- refusing to auto-generate a "
+        "co-located passphrase file (see backend/wallet/keystore.py)."
     )
-    return token
 
 
 def get_passphrase_interactive(prompt: str = "Keystore passphrase: ") -> str:
