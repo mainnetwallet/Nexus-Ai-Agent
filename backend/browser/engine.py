@@ -44,6 +44,22 @@ class BrowserEngineError(RuntimeError):
     pass
 
 
+def _safe_download_name(suggested: str) -> str:
+    """Reduce a remote-supplied download filename to a safe basename.
+
+    ``suggested_filename`` comes from the site (Content-Disposition), so it
+    may contain ``../``, absolute paths, or Windows-style separators even on
+    POSIX hosts. Normalize both separator styles and keep only the final
+    path component so a download can never write outside the downloads
+    directory; fall back to a timestamped name when nothing usable remains.
+    """
+    raw = (suggested or "").strip().replace("\\", "/")
+    name = Path(raw).name.strip()
+    if name in ("", ".", ".."):
+        return f"download-{int(time.time())}.bin"
+    return name
+
+
 class BrowserEngine:
     """
     Wraps a single Playwright browser + persistent context. One instance
@@ -129,11 +145,20 @@ class BrowserEngine:
 
     def _on_download(self, download: Download) -> None:
         async def _save() -> None:
-            target = SCREENSHOT_DIR.parent / "downloads" / download.suggested_filename
-            target.parent.mkdir(parents=True, exist_ok=True)
-            await download.save_as(str(target))
-            self._downloads.append(target)
-            logger.info("Download saved: %s", target)
+            try:
+                # suggested_filename is attacker-controlled (the remote site
+                # picks it via Content-Disposition). Reduce it to a plain
+                # basename via _safe_download_name() so a name like
+                # "../../etc/x" or "..\\evil" can't escape the downloads
+                # directory; a timestamped name is used when the site
+                # supplies nothing usable.
+                target = SCREENSHOT_DIR.parent / "downloads" / _safe_download_name(download.suggested_filename)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                await download.save_as(str(target))
+                self._downloads.append(target)
+                logger.info("Download saved: %s", target)
+            except Exception:
+                logger.exception("Failed to save download (suggested_filename=%r)", download.suggested_filename)
 
         asyncio.create_task(_save())
 

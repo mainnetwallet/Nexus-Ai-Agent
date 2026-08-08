@@ -61,22 +61,22 @@ class DiscordMCPConnector(SocialMCPConnector):
             ),
             MCPTool(
                 name="send_message",
-                description="Send a message to a channel (by channel URL).",
-                input_schema={"channel_url": "string", "text": "string"},
+                description="Send a message to a channel (by channel URL). Requires confirm=true -- show the user the exact text, and only pass confirm=true once they've explicitly approved it.",
+                input_schema={"channel_url": "string", "text": "string", "confirm": "boolean (must be true)"},
                 keywords=["send discord message", "post to channel", "message discord channel"],
                 destructive=True,
             ),
             MCPTool(
                 name="reply",
-                description="Reply to the most recent message in a channel with the given text (best-effort: uses Discord's inline reply on the last visible message).",
-                input_schema={"channel_url": "string", "text": "string"},
+                description="Reply to the most recent message in a channel with the given text (best-effort: uses Discord's inline reply on the last visible message). Requires confirm=true -- same as send_message.",
+                input_schema={"channel_url": "string", "text": "string", "confirm": "boolean (must be true)"},
                 keywords=["reply on discord", "reply to message", "discord reply"],
                 destructive=True,
             ),
             MCPTool(
                 name="upload_file",
-                description="Upload a file to a channel, optionally with a caption.",
-                input_schema={"channel_url": "string", "file_path": "string", "caption": "string (optional)"},
+                description="Upload a file to a channel, optionally with a caption. Requires confirm=true -- same as send_message.",
+                input_schema={"channel_url": "string", "file_path": "string", "caption": "string (optional)", "confirm": "boolean (must be true)"},
                 keywords=["upload file discord", "send file", "attach file discord"],
                 destructive=True,
             ),
@@ -93,11 +93,11 @@ class DiscordMCPConnector(SocialMCPConnector):
         if tool_name == "read_channel":
             return await self._read_channel(arguments.get("channel_url", ""), int(arguments.get("limit", 30) or 30))
         if tool_name == "send_message":
-            return await self._send_message(arguments.get("channel_url", ""), arguments.get("text", ""))
+            return await self._send_message(arguments)
         if tool_name == "reply":
-            return await self._reply(arguments.get("channel_url", ""), arguments.get("text", ""))
+            return await self._reply(arguments)
         if tool_name == "upload_file":
-            return await self._upload_file(arguments.get("channel_url", ""), arguments.get("file_path", ""), arguments.get("caption", ""))
+            return await self._upload_file(arguments)
         raise MCPToolError(f"unknown tool '{tool_name}'")
 
     # ---- Operations -------------------------------------------------------
@@ -171,11 +171,14 @@ class DiscordMCPConnector(SocialMCPConnector):
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return {"channel_url": channel_url, "messages": lines[-max(1, limit):]}
 
-    async def _send_message(self, channel_url: str, text: str) -> dict[str, Any]:
+    async def _send_message(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        channel_url = arguments.get("channel_url", "")
+        text = arguments.get("text", "")
         if not channel_url:
             raise MCPToolError("channel_url is required")
         if not text or not text.strip():
             raise MCPToolError("text is required")
+        require_confirm(arguments, "send_message")
         engine = await self._ensure_session()
         page_id = None
         try:
@@ -192,11 +195,14 @@ class DiscordMCPConnector(SocialMCPConnector):
                 await engine.close_tab(page_id)
         return {"sent": True, "channel_url": channel_url, "text": text}
 
-    async def _reply(self, channel_url: str, text: str) -> dict[str, Any]:
+    async def _reply(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        channel_url = arguments.get("channel_url", "")
+        text = arguments.get("text", "")
         if not channel_url:
             raise MCPToolError("channel_url is required")
         if not text or not text.strip():
             raise MCPToolError("text is required")
+        require_confirm(arguments, "reply")
         engine = await self._ensure_session()
         page_id = None
         try:
@@ -218,11 +224,15 @@ class DiscordMCPConnector(SocialMCPConnector):
                 await engine.close_tab(page_id)
         return {"replied": True, "channel_url": channel_url, "text": text}
 
-    async def _upload_file(self, channel_url: str, file_path: str, caption: str) -> dict[str, Any]:
+    async def _upload_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        channel_url = arguments.get("channel_url", "")
+        file_path = arguments.get("file_path", "")
+        caption = arguments.get("caption", "")
         if not channel_url:
             raise MCPToolError("channel_url is required")
         if not file_path:
             raise MCPToolError("file_path is required")
+        require_confirm(arguments, "upload_file")
         engine = await self._ensure_session()
         page_id = None
         try:

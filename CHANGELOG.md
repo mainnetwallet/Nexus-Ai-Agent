@@ -4,6 +4,27 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Security review: auth, downloads, Discord confirm gates
+
+### Fixed
+- `backend/api/auth.py` — `require_auth` now works on WebSocket routes. It accepts
+  an `HTTPConnection` (the base of both `Request` and `WebSocket`) so a `Request`
+  annotation no longer silently breaks WS handshakes, and honors the frontend's
+  `?token=<token>` query parameter (browser WebSocket clients cannot set custom
+  handshake headers) alongside the REST `Authorization: Bearer <token>` header.
+  A header that is present but not Bearer-prefixed is rejected outright instead of
+  falling back to the query string; the token stays compared in constant time.
+- `backend/browser/engine.py` — browser downloads can no longer escape the
+  downloads directory: the remote-supplied `suggested_filename` (Content-Disposition)
+  is reduced to a bare basename (both `/` and `\` separators) with a timestamped
+  fallback, and the save task now logs failures instead of silently dropping them.
+- `backend/mcp/connectors/discord_connector.py` — `send_message`, `reply`, and
+  `upload_file` are now gated behind `require_confirm()` (callers must pass
+  `confirm=true`), matching the X and Gmail connectors' rule for outward-facing,
+  irreversible actions; their `input_schema`s advertise the `confirm` flag.
+- Added tests: `backend/tests/test_auth.py`, `backend/tests/test_mcp_discord_connector.py`,
+  `backend/tests/test_browser_download_name.py`.
+
 ## [Unreleased] - Hot signer: batch wallet sends (1->many / many->1 / many->many)
 
 Chat could only send native/token transfers 1 wallet -> 1 address at a time. Added
