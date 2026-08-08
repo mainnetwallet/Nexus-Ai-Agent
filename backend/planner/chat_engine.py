@@ -598,6 +598,28 @@ class ChatEngine:
         session = await self.get_or_create_session(session_id, channel)
         await self._append(session.id, ChatRole.USER, text)
 
+        # Wallet secret entry: intercepted FIRST -- before Teach Mode, tx
+        # batch, chain confirmation, profile selection, AND the paused-task
+        # human-in-the-loop interception. This message either answers a
+        # pending "paste your seed phrase / private key now" prompt (see
+        # _handle_wallet_crud's import branch), or looks like a raw secret
+        # with no pending draft at all. It is NEVER passed to the LLM
+        # classifier or any other LLM call, and the copy just persisted by
+        # _append above is redacted immediately after use so it doesn't sit
+        # in chat history in the clear. It must run before the paused-task
+        # interception below: otherwise a pasted secret could be misread as
+        # fix advice and stored in plaintext in task.notes.
+        if session.id in self._pending_wallet_import or _looks_like_wallet_secret(text) is not None:
+            try:
+                reply, meta = await self._handle_pending_wallet_secret_turn(session, text)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Wallet secret import turn failed")
+                self._pending_wallet_import.pop(session.id, None)
+                reply, meta = f"Something went wrong importing that wallet: {exc}", {}
+            await self._redact_last_user_message(session.id)
+            await self._append(session.id, ChatRole.ASSISTANT, reply, category="wallet", meta=meta)
+            return {"session_id": session.id, "reply": reply, "category": "wallet", "action": "secret_import", "meta": meta}
+
         # Teach Mode is intercepted BEFORE intent classification: once a
         # session has an active teach draft (backend.skills.teach.
         # TeachModeManager, keyed by this chat session's id), every message
@@ -669,25 +691,6 @@ class ChatEngine:
                 reply, meta = f"Something went wrong resuming the task: {exc}", {}
             await self._append(session.id, ChatRole.ASSISTANT, reply, category="agent_command", meta=meta)
             return {"session_id": session.id, "reply": reply, "category": "agent_command", "action": "resume_task", "meta": meta}
-
-        # Wallet secret entry: intercepted BEFORE intent classification --
-        # this message either answers a pending "paste your seed phrase /
-        # private key now" prompt (see _handle_wallet_crud's import
-        # branch), or looks like a raw secret with no pending draft at all.
-        # Either way it is NEVER passed to the LLM classifier or any other
-        # LLM call, and the copy just persisted by _append above is
-        # redacted immediately after use so it doesn't sit in chat history
-        # in the clear.
-        if session.id in self._pending_wallet_import or _looks_like_wallet_secret(text) is not None:
-            try:
-                reply, meta = await self._handle_pending_wallet_secret_turn(session, text)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("Wallet secret import turn failed")
-                self._pending_wallet_import.pop(session.id, None)
-                reply, meta = f"Something went wrong importing that wallet: {exc}", {}
-            await self._redact_last_user_message(session.id)
-            await self._append(session.id, ChatRole.ASSISTANT, reply, category="wallet", meta=meta)
-            return {"session_id": session.id, "reply": reply, "category": "wallet", "action": "secret_import", "meta": meta}
 
         context = await self._conversation_context(session.id)
         classifier_input = self._classifier_prompt(context, text)
